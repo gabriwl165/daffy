@@ -14,7 +14,7 @@ func eligible(m Mount) bool {
 		return false
 	}
 	switch m.Filesystem {
-	case FilesystemExt2, FilesystemExt3, FilesystemExt4, FilesystemXFS, FilesystemBtrfs, FilesystemF2FS, FilesystemVFAT, FilesystemExFAT, FilesystemNTFS, FilesystemNTFS3, FilesystemFuseblk, FilesystemZFS, FilesystemBcacheFS, FilesystemOverlay, FilesystemISO9660, FilesystemEROFS, FilesystemSquashFS:
+	case FilesystemExt2, FilesystemExt3, FilesystemExt4, FilesystemXFS, FilesystemBtrfs, FilesystemF2FS, FilesystemVFAT, FilesystemExFAT, FilesystemNTFS, FilesystemNTFS3, FilesystemFuseblk, FilesystemZFS, FilesystemBcacheFS, FilesystemOverlay, FilesystemISO9660, FilesystemEROFS, FilesystemSquashFS, FilesystemAPFS:
 	case FilesystemTmpfs, FilesystemRamfs, FilesystemProc, FilesystemSysfs, FilesystemDevpts, FilesystemDevtmpfs, FilesystemCgroup, FilesystemCgroup2, FilesystemSecurityFS, FilesystemDebugFS, FilesystemTraceFS, FilesystemConfigFS, FilesystemPstore, FilesystemMqueue, FilesystemFusectl, FilesystemRPCPipeFS, FilesystemNFS, FilesystemNFS4, FilesystemCIFS, FilesystemSMB3, Filesystem9P, FilesystemAutofs, FilesystemFuse:
 		return false
 	default:
