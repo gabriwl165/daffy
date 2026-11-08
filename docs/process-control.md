@@ -23,8 +23,11 @@ A process can handle or ignore SIGTERM. Exit codes are 0 for a sent signal,
 
 - Linux matches listening socket inodes in `/proc/net/tcp` and `/proc/net/tcp6`
   to `/proc/<pid>/fd` links. Discovery is limited to visible process and network
-  namespaces. Restricted `/proc` visibility can prevent port-based termination;
-  incomplete discovery is refused rather than reported as no owner.
+  namespaces. Permission-denied process entries are skipped: an accessible
+  discovered owner may be signalled even though hidden processes sharing that
+  socket cannot be ruled out. Thus Linux port lookup does not guarantee
+  systemwide uniqueness. Multiple discovered owners and non-permission discovery
+  failures are refused; incomplete visibility can also result in no owner found.
 - macOS invokes `/usr/sbin/lsof` for TCP listeners and `/bin/ps` for process-start
   identity. These commands run directly, without a shell, with bounded output
   and timeouts. Missing tools, warnings, and permission errors fail discovery.

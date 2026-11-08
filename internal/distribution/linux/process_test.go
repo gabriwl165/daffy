@@ -61,6 +61,39 @@ func TestFinderProcFixturesIPv4IPv6AndMultipleOwners(t *testing.T) {
 	}
 }
 
+func TestFinderAllowsAccessibleOwnerWhenUnrelatedProcEntryIsInaccessible(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read mode-000 directories")
+	}
+	root := t.TempDir()
+	for _, name := range []string{"net", "123/fd", "456/fd"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	header := "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+	row := "0: 00000000:1F90 00000000:0000 0A 0 0 00:00000000 0 0 9001\n"
+	for _, item := range []struct{ path, data string }{{"net/tcp", header + row}, {"net/tcp6", strings.Replace(header, "rem_address", "remote_address", 1)}} {
+		if err := os.WriteFile(filepath.Join(root, item.path), []byte(item.data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stat := "123 (proc) S" + strings.Repeat(" x", 18) + " 77\n"
+	if err := os.WriteFile(filepath.Join(root, "123/stat"), []byte(stat), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("socket:[9001]", filepath.Join(root, "123/fd/3")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "456/fd"), 0000); err != nil {
+		t.Fatal(err)
+	}
+	owners, err := NewProcessFinder(root).Find(context.Background(), process.ProcessTarget{Kind: process.TargetTCPPort, Port: 8080})
+	if err != nil || len(owners) != 1 || owners[0].PID != 123 {
+		t.Fatalf("owners=%v err=%v", owners, err)
+	}
+}
+
 func TestFinderIncludesPID1ForListenerOwnership(t *testing.T) {
 	for _, pids := range [][]string{{"1"}, {"1", "123"}} {
 		root := t.TempDir()
