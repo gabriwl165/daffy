@@ -14,7 +14,7 @@ const (
 	DiskOutputLimit              = 64 * 1024
 	DiskDefaultDeviceLimit       = 32
 	DiskHeaderKBPerTransfer      = "KB/t"
-	DiskHeaderTransfersPerSecond = "t/s"
+	DiskHeaderTransfersPerSecond = "tps"
 	DiskHeaderMegabytesPerSecond = "MB/s"
 	DiskDevicePrefix             = "disk"
 )

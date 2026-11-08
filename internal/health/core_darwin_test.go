@@ -35,7 +35,7 @@ func TestCollectDarwinUsesBoundedSysctlAndKeepsRootFinding(t *testing.T) {
 			if cfg.Timeout != 3*time.Second || len(cfg.Args) != 7 {
 				t.Fatalf("unexpected iostat config: %+v", cfg)
 			}
-			return integrationResult{stdout: []byte("disk0\nKB/t t/s MB/s\n1 2 3\n4 5 6\n")}
+			return integrationResult{stdout: []byte("disk0\nKB/t tps MB/s\n1 2 3\n4 5 6\n")}
 		}
 		if cfg.Tool != darwinSysctlCommand || cfg.Timeout != 0 || len(cfg.Args) != 2 || cfg.Args[0] != "-n" {
 			t.Fatalf("unexpected command config: %+v", cfg)

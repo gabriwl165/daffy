@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const diskFixture = "              disk0               disk1\n    KB/t  t/s  MB/s     KB/t  t/s  MB/s\n   20.00   10  0.20     30.00  20  0.60\n   10.00    5  0.05     15.00  10  0.15\n"
+const diskFixture = "              disk0               disk1\n    KB/t  tps  MB/s     KB/t  tps  MB/s\n   20.00   10  0.20     30.00  20  0.60\n   10.00    5  0.05     15.00  10  0.15\n"
 
 func TestParseDiskUsageSecondSampleMultiDevice(t *testing.T) {
 	u, err := ParseDiskUsage(diskFixture, 2, 32)
@@ -21,7 +21,7 @@ func TestParseDiskUsageSecondSampleMultiDevice(t *testing.T) {
 }
 
 func TestParseDiskUsageRejectsInvalidSamples(t *testing.T) {
-	for _, input := range []string{"disk0\nKB/t t/s MB/s\n1 2 3\n", "disk0\nKB/t t/s MB/s\n1 2 NaN\n1 2 3", "disk0\nKB/t t/s MB/s\n1 -1 3\n1 2 3", "disk0\nKB/t unknown MB/s\n1 2 3\n1 2 3"} {
+	for _, input := range []string{"disk0\nKB/t tps MB/s\n1 2 3\n", "disk0\nKB/t tps MB/s\n1 2 NaN\n1 2 3", "disk0\nKB/t tps MB/s\n1 -1 3\n1 2 3", "disk0\nKB/t unknown MB/s\n1 2 3\n1 2 3"} {
 		if _, err := ParseDiskUsage(input, 1, 32); err == nil {
 			t.Fatalf("accepted %q", input)
 		}
@@ -29,7 +29,7 @@ func TestParseDiskUsageRejectsInvalidSamples(t *testing.T) {
 	if _, err := ParseDiskUsage(strings.Repeat("x", DiskOutputLimit+1), 1, 32); err == nil {
 		t.Fatal("accepted oversized output")
 	}
-	if _, err := ParseDiskUsage("disk0\nKB/t t/s MB/s\n0 0 0\n0 0 0", 1, 1); err != nil {
+	if _, err := ParseDiskUsage("disk0\nKB/t tps MB/s\n0 0 0\n0 0 0", 1, 1); err != nil {
 		t.Fatal(err)
 	}
 }
