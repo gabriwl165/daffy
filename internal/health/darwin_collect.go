@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gabriwl165/daffy/internal/distribution"
+	macos "github.com/gabriwl165/daffy/internal/distribution/macos"
 )
 
 const darwinSysctlCommand distribution.Tool = "sysctl"
@@ -42,7 +44,12 @@ func darwinValue(result integrationResult) string {
 	return strings.TrimSpace(string(result.stdout))
 }
 
-func darwinReport(kernel, cpu, arch string, mem integrationResult) Report {
+type darwinSamples struct {
+	CPU               *macos.CPUUsage
+	CPUSampleInterval time.Duration
+}
+
+func darwinReport(kernel, cpu, arch string, mem integrationResult, samples darwinSamples) Report {
 	r := Report{SchemaVersion: "1", System: SystemInfo{OS: "macOS", Kernel: kernel, DistroID: string(darwinDistroID), DistroAdapter: "unsupported"}, Findings: []Finding{}}
 	if cpu == "" {
 		cpu = arch
@@ -60,7 +67,6 @@ func darwinReport(kernel, cpu, arch string, mem integrationResult) Report {
 		area    Area
 		summary string
 	}{
-		{darwinFindingCPUUtilization, AreaCPU, "CPU utilization sampling unavailable"},
 		{darwinFindingProcessCPU, AreaProcess, "Per-process CPU sampling unavailable"},
 		{darwinFindingMemorySwap, AreaMemory, "Swap usage unavailable"},
 		{darwinFindingThermalTemperature, AreaThermal, "Temperature sensors unavailable"},
@@ -70,6 +76,12 @@ func darwinReport(kernel, cpu, arch string, mem integrationResult) Report {
 		{darwinFindingPressureMemory, AreaPressure, "Memory pressure unavailable"},
 		{darwinFindingPressureIO, AreaPressure, "I/O pressure unavailable"},
 		{darwinFindingSwapActivity, AreaSwap, "Swap activity unavailable"},
+	}
+	if samples.CPU != nil {
+		u := samples.CPU
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingCPUUtilization), Area: AreaCPU, Severity: SeverityInfo, Summary: fmt.Sprintf("CPU utilization: %.1f%% busy", u.BusyPercent), Evidence: []string{fmt.Sprintf("sample_interval=%s user=%.1f%% system=%.1f%% idle=%.1f%%", samples.CPUSampleInterval, u.UserPercent, u.SystemPercent, u.IdlePercent)}, Confidence: ConfidenceMedium})
+	} else {
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingCPUUtilization), Area: AreaCPU, Severity: SeverityUnknown, Summary: "CPU utilization sampling unavailable", Confidence: ConfidenceLow})
 	}
 	for _, item := range unknowns {
 		r.Findings = append(r.Findings, Finding{ID: string(item.id), Area: item.area, Severity: SeverityUnknown, Summary: item.summary, Confidence: ConfidenceLow})

@@ -6,7 +6,17 @@ import (
 	"context"
 	"runtime"
 	"time"
+
+	"github.com/gabriwl165/daffy/internal/distribution"
+	macos "github.com/gabriwl165/daffy/internal/distribution/macos"
 )
+
+type darwinDiagnosticRunner struct{ run integrationExecutor }
+
+func (r darwinDiagnosticRunner) Run(ctx context.Context, c macos.DiagnosticCommand) macos.DiagnosticResult {
+	v := r.run(ctx, commandConfig{Timeout: c.Timeout, Tool: distribution.Tool(c.Executable), Args: c.Args})
+	return macos.DiagnosticResult{Stdout: v.stdout, Stderr: v.stderr, Err: v.err, Truncated: v.truncated}
+}
 
 func collectDarwin(ctx context.Context, opts Options) Report {
 	return collectDarwinWith(ctx, opts, integrationRun)
@@ -23,7 +33,13 @@ func collectDarwinWith(ctx context.Context, opts Options, run integrationExecuto
 	kernel := darwinValue(read(darwinKernelKey))
 	cpu := darwinValue(read(darwinCPUModelKey))
 	memResult := read(darwinMemorySizeKey)
-	r := darwinReport(kernel, cpu, runtime.GOARCH, memResult)
+	var samples darwinSamples
+	if ctx.Err() == nil {
+		if usage, err := (macos.CPUCollector{Runner: darwinDiagnosticRunner{run}}).Collect(ctx, opts.SampleInterval, opts.CommandTimeout); err == nil {
+			samples = darwinSamples{CPU: &usage, CPUSampleInterval: usage.SampleInterval}
+		}
+	}
+	r := darwinReport(kernel, cpu, runtime.GOARCH, memResult, samples)
 	r.CollectedAt = started
 	root := coreRootFilesystemFinding()
 	r.Findings = append(r.Findings, root)
