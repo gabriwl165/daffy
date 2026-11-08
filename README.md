@@ -70,10 +70,12 @@ daffy watch --interval 5s          # Repeated, interruptible observations
 daffy report --json                # One JSON report on stdout
 daffy watch --json                 # One JSON report per line (NDJSON)
 daffy doctor                       # Capabilities, tools, and permissions
-daffy disk                         # Space hotspots across eligible local mounts
+daffy disk                         # Linux: space hotspots across eligible local mounts
 daffy disk /home --format json     # Narrow the scope; flags may follow the path
-daffy plugins list                 # Available built-in domain analyses
 daffy docker                       # Docker's default diagnostic bundle
+daffy docker disk                  # Docker disk accounting only
+daffy docker runtime               # Docker runtime snapshot
+daffy docker config                # Docker configuration checks
 daffy bazel --path DIR              # Inspect an explicit output/cache directory
 daffy --help
 daffy --version
@@ -87,22 +89,30 @@ Completed scans exit 0 even when they contain critical findings: this is a
 diagnostic tool, not a pass/fail health gate. Execution failures exit 1; invalid
 usage exits 2. Interrupted commands exit 130.
 
-See [analysis plugins](docs/plugins.md) for Docker and Bazel scope, safety, and
-extension architecture. Plugins run only when explicitly requested.
+Use `daffy docker` and `daffy bazel` directly; no `plugins run` prefix is needed.
+Use `daffy plugins list` to discover available analyses. See
+[analysis plugins](docs/plugins.md) for scope, safety, and extension architecture.
+These analyses run only when explicitly requested.
 
-`daffy plugins run docker`, `daffy plugins run bazel`, and `daffy disk scan`
-remain supported. Short commands use the same handlers, options, and exit codes.
+<details>
+<summary>Legacy command compatibility</summary>
+
+The older `plugins run` forms and `disk scan` remain supported with the same
+handlers, options, and exit codes. Prefer the short commands shown above.
+
+</details>
 
 ### Disk space profiling
 
-`daffy disk scan` is an explicit, read-only filesystem traversal, separate from
-the default health scan. Omit the path to discover eligible local filesystems in
-the current mount namespace, or supply a directory to narrow the scan:
+`daffy disk [path]` is an explicit, read-only filesystem traversal, separate from
+the default health scan. On Linux, omit the path to discover eligible local
+filesystems in the current mount namespace, or supply a directory to narrow the
+scan. On macOS, an explicit APFS directory is required:
 
 ```sh
-daffy disk scan --exclude /srv/archive --time-budget 2m
-daffy disk scan "$HOME" --top 10
-daffy disk scan /var --format json
+daffy disk --exclude /srv/archive --time-budget 2m  # Linux whole-machine scan
+daffy disk "$HOME" --top 10                       # Explicit directory scope
+daffy disk /var --format json                     # Linux directory scope
 ```
 
 The report ranks files and directory trees by observed allocated space, reports
