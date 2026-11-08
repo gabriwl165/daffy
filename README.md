@@ -1,14 +1,16 @@
 # Daffy
 
-A read-only Linux health CLI, written in Go. Investigate overheating, freezes,
+A read-only system health CLI, written in Go. Investigate overheating, freezes,
 resource contention, and slow boots without applying speculative “optimizations.”
 Designed for Zorin OS and Ubuntu; other Linux distributions may expose fewer checks.
+Initial macOS support targets Apple Silicon and exposes fewer signals than Linux.
 
-## Install on Linux
+## Install on Linux or Apple Silicon macOS
 
-Ubuntu, Zorin OS, and other Linux distributions on x86-64 or ARM64 can install
-a prebuilt binary without Go or root access. The installer requires `curl`,
-`tar`, `sha256sum`, and standard Linux command-line utilities.
+Linux on x86-64 or ARM64 and macOS on Apple Silicon can install a prebuilt
+binary without Go or root access. The installer requires `curl`, `tar`, and
+`sha256sum` on Linux or `shasum` on macOS, plus standard system utilities.
+Intel macOS and Windows installation are not supported.
 
 Download the installer, inspect it, then run it:
 
@@ -53,7 +55,7 @@ rm -- "$HOME/.local/bin/daffy"
 
 ## Build from source
 
-Requires Go 1.24 or newer. No third-party Go dependencies.
+Requires Go 1.24 or newer. Darwin disk traversal uses `golang.org/x/sys/unix`.
 
 ```sh
 go build -o bin/daffy ./cmd/daffy
@@ -117,6 +119,13 @@ See [disk profiling](docs/disk-profiling.md) for scope, accounting, portability,
 and safety limits.
 
 ## Coverage
+
+The table below describes Linux coverage. The initial macOS provider reports
+kernel/CPU identity, physical memory capacity, and root filesystem capacity when
+available. CPU utilization, processes, swap, pressure, thermals, and disk activity
+remain explicitly unknown; capacity alone does not establish system health.
+Linux-only integrations and package recommendations are not run on macOS.
+Windows cross-compiles but has no supported native health or disk provider.
 
 | Area | Evidence |
 | --- | --- |
@@ -195,6 +204,11 @@ executors to test errors and permissions without root or real hardware faults.
 CLI tests exercise routing, output, validation, and cancellation. Live scans
 are smoke tests only: they do not reproduce freezes or validate every device.
 
+CI runs the suite and installer fixtures on native Apple Silicon, verifies the
+runner architecture, and gates releases on that job. Linux also cross-builds
+Darwin ARM64 and Windows AMD64. Cross-builds alone do not prove runtime support.
+Installer fixture tests additionally require Python 3; the installer itself does not.
+
 ### Container smoke tests
 
 ```sh
@@ -230,8 +244,8 @@ Structure:
 ```text
 cmd/daffy/          entry point and signal handling
 internal/cli/       commands and human/machine-readable presentation
-internal/health/    report model, Linux collectors, optional integrations
-internal/disk/      portable disk contracts, Linux platform, read-only profiler
+internal/health/    shared reports, OS-selected providers, Linux integrations
+internal/disk/      shared scanner, OS-specific mounts and safe traversal
 internal/distribution/ typed distro profiles and tool identities
   ubuntu/           Ubuntu-specific profile construction
   zorin/            Zorin-specific profile construction

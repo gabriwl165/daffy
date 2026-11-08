@@ -21,6 +21,10 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./...
+      - name: Cross-build Darwin ARM64 and Windows AMD64
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./cmd/daffy
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/daffy
       - name: Check Linux installer and release build
         run: |
           sh -n setup.sh scripts/build-release.sh scripts/test-install.sh
@@ -29,8 +33,43 @@ jobs:
           sh scripts/build-release.sh "$out"
           tar -tzf "$out/daffy_linux_amd64.tar.gz" | grep -qx daffy
           tar -tzf "$out/daffy_linux_arm64.tar.gz" | grep -qx daffy
+          tar -tzf "$out/daffy_darwin_arm64.tar.gz" | grep -qx daffy
           (cd "$out" && sha256sum -c SHA256SUMS)
           rm -rf "$out"
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Verify native Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - run: go test ./...
+      - name: Smoke-test native health and scoped disk commands
+        run: |
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          work=$(cd "$work" && pwd -P)
+          mkdir "$work/scope"
+          printf 'native disk fixture\n' > "$work/scope/file"
+          go build -o "$work/daffy" ./cmd/daffy
+          "$work/daffy" scan --json > "$work/health.json"
+          "$work/daffy" doctor --json > "$work/doctor.json"
+          "$work/daffy" disk "$work/scope" --json > "$work/disk.json"
+          python3 - "$work" <<'PY'
+          import json, pathlib, sys
+          work = pathlib.Path(sys.argv[1])
+          health = json.loads((work / 'health.json').read_text())
+          disk = json.loads((work / 'disk.json').read_text())
+          assert health['collected_at'] and health['findings']
+          assert disk['coverage']['complete'] and disk['coverage']['files'] == 1
+          PY
+      - name: Check installer on macOS
+        run: |
+          sh -n setup.sh scripts/build-release.sh scripts/test-install.sh
+          sh scripts/test-install.sh
   container-smoke:
     runs-on: ubuntu-latest
     strategy:
@@ -72,7 +111,7 @@ jobs:
           --entrypoint /bin/sh daffy-smoke /usr/local/bin/container-smoke
   release:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    needs: [test, container-smoke]
+    needs: [test, macos-arm64, container-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
