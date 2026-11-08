@@ -51,3 +51,18 @@ and optional fields. Final integration verification uses formatting, vet,
 race-enabled tests, build, live CLI smoke checks, and the four existing Docker
 smoke configurations. Container limitations documented in the README still
 apply: Zorin identity fixtures are not Zorin installations or hardware tests.
+
+## Final verification
+
+The reconciled refactor passed formatting, `go vet ./...`, `go test -race ./...`,
+build with version injection, shell syntax, and `git diff --check`.
+All four read-only/non-root Docker smoke cases passed: Ubuntu 22.04/24.04 and
+Zorin 17/18 identity fixtures on their corresponding Ubuntu bases.
+
+Before/after live comparisons confirmed identical help text and doctor JSON,
+the same report top-level keys, system metadata, and finding IDs. A live scan
+completed, watch emitted valid NDJSON, and SIGINT exited 130. Dynamic readings
+and timestamps were not compared for equality and do not establish machine
+health. Fixture tests additionally protect policy precedence, confidence,
+journal evidence ordering, command configuration, option forwarding, metadata
+omission/order, duration boundaries, and cancellation behavior.

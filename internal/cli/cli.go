@@ -37,6 +37,31 @@ type Deps struct {
 	Doctor  func(context.Context, health.Options) []health.Check
 }
 
+type RunConfig struct {
+	Args        []string
+	Out, ErrOut io.Writer
+	Deps        Deps
+	Version     string
+}
+
+type command string
+
+const (
+	commandScan   command = "scan"
+	commandWatch  command = "watch"
+	commandReport command = "report"
+	commandDoctor command = "doctor"
+)
+
+type exitCode int
+
+const (
+	exitSuccess     exitCode = 0
+	exitFailure     exitCode = 1
+	exitUsage       exitCode = 2
+	exitInterrupted exitCode = 130
+)
+
 func DefaultDeps() Deps { return Deps{health.Collect, health.Doctor} }
 
 type config struct {
@@ -44,31 +69,44 @@ type config struct {
 	sensitive, privileged, json bool
 }
 
-func Run(ctx context.Context, args []string, out, errOut io.Writer, deps Deps) int {
-	return RunVersion(ctx, args, out, errOut, deps, version)
+func (c config) healthOptions() health.Options {
+	return health.Options{SampleInterval: c.sample, CommandTimeout: c.timeout, IncludeSensitive: c.sensitive, Privileged: c.privileged}
 }
-func RunVersion(ctx context.Context, args []string, out, errOut io.Writer, deps Deps, buildVersion string) int {
+
+type watchConfig struct {
+	out, errOut io.Writer
+	deps        Deps
+	options     health.Options
+	display     config
+}
+
+func Run(ctx context.Context, rc RunConfig) int {
+	args, out, errOut, deps := rc.Args, rc.Out, rc.ErrOut, rc.Deps
+	buildVersion := rc.Version
+	if buildVersion == "" {
+		buildVersion = version
+	}
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		fmt.Fprint(out, usage)
-		return 0
+		return int(exitSuccess)
 	}
 	if len(args) > 0 && args[0] == "--version" {
 		fmt.Fprintln(out, "daffy", buildVersion)
-		return 0
+		return int(exitSuccess)
 	}
-	command := "scan"
+	cmd := commandScan
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
-		case "scan", "watch", "report", "doctor":
-			command = args[0]
+		case string(commandScan), string(commandWatch), string(commandReport), string(commandDoctor):
+			cmd = command(args[0])
 			args = args[1:]
 		default:
 			fmt.Fprintf(errOut, "unknown command %q\n%s", args[0], usage)
-			return 2
+			return int(exitUsage)
 		}
 	}
 	c := config{sample: time.Second, timeout: 3 * time.Second, interval: 5 * time.Second}
-	fs := flag.NewFlagSet("daffy "+command, flag.ContinueOnError)
+	fs := flag.NewFlagSet("daffy "+string(cmd), flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	fs.DurationVar(&c.sample, "sample", c.sample, "sample duration (100ms–10s)")
 	fs.DurationVar(&c.timeout, "timeout", c.timeout, "timeout for optional commands")
@@ -80,31 +118,31 @@ func RunVersion(ctx context.Context, args []string, out, errOut io.Writer, deps 
 	if e := fs.Parse(args); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
 			fmt.Fprint(out, usage)
-			return 0
+			return int(exitSuccess)
 		}
-		return 2
+		return int(exitUsage)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(errOut, "unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
-		return 2
+		return int(exitUsage)
 	}
 	if c.sample < 100*time.Millisecond || c.sample > 10*time.Second || c.timeout <= 0 || c.interval <= 0 {
 		fmt.Fprintln(errOut, "invalid duration: sample must be 100ms–10s; timeout and interval must be positive")
-		return 2
+		return int(exitUsage)
 	}
-	if command == "report" && !c.json {
+	if cmd == commandReport && !c.json {
 		fmt.Fprintln(errOut, "report requires --json")
-		return 2
+		return int(exitUsage)
 	}
 	if runtime.GOOS != "linux" {
 		fmt.Fprintf(errOut, "daffy supports Linux only (current platform: %s)\n", runtime.GOOS)
-		return 1
+		return int(exitFailure)
 	}
-	if command == "watch" {
-		return watch(ctx, out, errOut, deps, c)
+	if cmd == commandWatch {
+		return watch(ctx, watchConfig{out: out, errOut: errOut, deps: deps, options: c.healthOptions(), display: c})
 	}
-	opts := health.Options{SampleInterval: c.sample, CommandTimeout: c.timeout, IncludeSensitive: c.sensitive, Privileged: c.privileged}
-	if command == "doctor" {
+	opts := c.healthOptions()
+	if cmd == commandDoctor {
 		checks := deps.Doctor(ctx, opts)
 		if e := ctx.Err(); e != nil {
 			return interrupted(errOut, e)
@@ -112,7 +150,7 @@ func RunVersion(ctx context.Context, args []string, out, errOut io.Writer, deps 
 		if e := printDoctor(out, checks, c.json); e != nil {
 			return failed(errOut, e)
 		}
-		return 0
+		return int(exitSuccess)
 	}
 	r := deps.Collect(ctx, opts)
 	if e := ctx.Err(); e != nil {
@@ -128,22 +166,23 @@ func RunVersion(ctx context.Context, args []string, out, errOut io.Writer, deps 
 			return failed(errOut, e)
 		}
 	}
-	return 0
+	return int(exitSuccess)
 }
-func failed(w io.Writer, e error) int { fmt.Fprintln(w, "daffy:", e); return 1 }
+func failed(w io.Writer, e error) int { fmt.Fprintln(w, "daffy:", e); return int(exitFailure) }
 func interrupted(w io.Writer, e error) int {
 	if errors.Is(e, context.Canceled) {
-		return 130
+		return int(exitInterrupted)
 	}
 	return failed(w, e)
 }
-func watch(ctx context.Context, out, errOut io.Writer, d Deps, c config) int {
+func watch(ctx context.Context, wc watchConfig) int {
+	out, errOut, d, c := wc.out, wc.errOut, wc.deps, wc.display
 	for {
 		started := time.Now()
-		r := d.Collect(ctx, health.Options{SampleInterval: c.sample, CommandTimeout: c.timeout, IncludeSensitive: c.sensitive, Privileged: c.privileged})
+		r := d.Collect(ctx, wc.options)
 		if e := ctx.Err(); e != nil {
 			if errors.Is(e, context.Canceled) {
-				return 130
+				return int(exitInterrupted)
 			}
 			return failed(errOut, e)
 		}
@@ -169,22 +208,22 @@ func watch(ctx context.Context, out, errOut io.Writer, d Deps, c config) int {
 		case <-ctx.Done():
 			t.Stop()
 			if errors.Is(ctx.Err(), context.Canceled) {
-				return 130
+				return int(exitInterrupted)
 			}
 			return failed(errOut, ctx.Err())
 		case <-t.C:
 		}
 	}
 }
-func severityRank(s string) int {
-	switch strings.ToLower(s) {
-	case "critical":
+func severityRank(s health.Severity) int {
+	switch health.Severity(strings.ToLower(string(s))) {
+	case health.SeverityCritical:
 		return 0
-	case "warning":
+	case health.SeverityWarning:
 		return 1
-	case "info":
+	case health.SeverityInfo:
 		return 2
-	case "ok":
+	case health.SeverityOK:
 		return 3
 	default:
 		return 4
@@ -193,8 +232,8 @@ func severityRank(s string) int {
 func sortReport(r *health.Report) {
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		a, b := r.Findings[i], r.Findings[j]
-		if severityRank(string(a.Severity)) != severityRank(string(b.Severity)) {
-			return severityRank(string(a.Severity)) < severityRank(string(b.Severity))
+		if severityRank(a.Severity) != severityRank(b.Severity) {
+			return severityRank(a.Severity) < severityRank(b.Severity)
 		}
 		if a.ID != b.ID {
 			return a.ID < b.ID
@@ -218,12 +257,17 @@ func printReport(w io.Writer, r health.Report) error {
 	if _, e := fmt.Fprintf(w, "Daffy system report · %s\n", safe(r.CollectedAt.Format(time.RFC3339))); e != nil {
 		return e
 	}
-	for _, item := range []struct{ key, value string }{
-		{"cpu_model", r.System.CPUModel}, {"distro_adapter", r.System.DistroAdapter},
-		{"distro_id", r.System.DistroID}, {"distro_version", r.System.DistroVersion},
-		{"kernel", r.System.Kernel}, {"os", r.System.OS},
+	for _, item := range []struct {
+		key, value string
+		optional   bool
+	}{
+		{key: "cpu_model", value: r.System.CPUModel, optional: true},
+		{key: "distro_adapter", value: r.System.DistroAdapter},
+		{key: "distro_id", value: r.System.DistroID},
+		{key: "distro_version", value: r.System.DistroVersion, optional: true},
+		{key: "kernel", value: r.System.Kernel}, {key: "os", value: r.System.OS},
 	} {
-		if item.value == "" {
+		if item.value == "" && (item.optional || r.System == (health.SystemInfo{})) {
 			continue
 		}
 		if _, e := fmt.Fprintf(w, "%s: %s\n", safe(item.key), safe(item.value)); e != nil {

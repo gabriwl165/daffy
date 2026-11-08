@@ -13,7 +13,7 @@ var version = "dev"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := cli.RunVersion(ctx, os.Args[1:], os.Stdout, os.Stderr, cli.DefaultDeps(), version)
+	code := cli.Run(ctx, cli.RunConfig{Args: os.Args[1:], Out: os.Stdout, ErrOut: os.Stderr, Deps: cli.DefaultDeps(), Version: version})
 	stop()
 	os.Exit(code)
 }

@@ -27,7 +27,7 @@ func fixtures() (Deps, *health.Options, *int) {
 }
 func run(args []string, d Deps) (int, string, string) {
 	var out, err bytes.Buffer
-	code := Run(context.Background(), args, &out, &err, d)
+	code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &err, Deps: d})
 	return code, out.String(), err.String()
 }
 func TestRoutesDefaultsOptions(t *testing.T) {
@@ -70,7 +70,7 @@ func TestHelpErrorsAndVersion(t *testing.T) {
 		}
 	}
 	var b bytes.Buffer
-	if RunVersion(context.Background(), []string{"--version"}, &b, &b, d, "v1.2") != 0 || !strings.Contains(b.String(), "v1.2") {
+	if Run(context.Background(), RunConfig{Args: []string{"--version"}, Out: &b, ErrOut: &b, Deps: d, Version: "v1.2"}) != 0 || !strings.Contains(b.String(), "v1.2") {
 		t.Fatal("version")
 	}
 }
@@ -94,10 +94,10 @@ func TestReportJsonAndDoctorOutputErrors(t *testing.T) {
 		t.Fatal(c)
 	}
 	bad := failWriter{}
-	if c := Run(context.Background(), []string{"doctor", "--json"}, bad, ioDiscard{}, d); c != 1 {
+	if c := Run(context.Background(), RunConfig{Args: []string{"doctor", "--json"}, Out: bad, ErrOut: ioDiscard{}, Deps: d}); c != 1 {
 		t.Fatalf("doctor writer exit %d", c)
 	}
-	if c := Run(context.Background(), nil, bad, ioDiscard{}, d); c != 1 {
+	if c := Run(context.Background(), RunConfig{Out: bad, ErrOut: ioDiscard{}, Deps: d}); c != 1 {
 		t.Fatalf("scan writer exit %d", c)
 	}
 }
@@ -117,7 +117,7 @@ func TestWatchNDJSONCancellation(t *testing.T) {
 	d.Collect = func(ctx context.Context, o health.Options) health.Report {
 		return health.Report{SchemaVersion: "watch"}
 	}
-	code := Run(ctx, []string{"watch", "--json", "--interval", "1s"}, w, &err, d)
+	code := Run(ctx, RunConfig{Args: []string{"watch", "--json", "--interval", "1s"}, Out: w, ErrOut: &err, Deps: d})
 	if code != 130 {
 		t.Fatalf("exit %d", code)
 	}

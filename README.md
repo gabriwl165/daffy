@@ -93,6 +93,13 @@ tuning cannot repair a loose heatsink, blocked airflow, or a failing fan.**
 
 ## Development and verification
 
+Use typed enum constants for closed application vocabularies, concrete structs
+for fixed data shapes, and named configuration structs for application APIs.
+Keep maps for genuinely dynamic collections and interfaces for useful external
+boundaries such as writers and contexts. Preserve CLI and JSON compatibility
+when refactoring. See [the stack review](docs/refactor-review.md) for rationale
+and the project-layout assessment.
+
 ```sh
 go test ./...
 go vet ./...
