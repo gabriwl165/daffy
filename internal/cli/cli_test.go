@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gabriwl165/daffy/internal/health"
+	"github.com/gabriwl165/daffy/internal/plugins"
 )
 
 func fixtures() (Deps, *health.Options, *int) {
@@ -24,6 +26,39 @@ func fixtures() (Deps, *health.Options, *int) {
 		return []health.Check{{Name: "proc", Available: true}}
 	}}
 	return d, got, &n
+}
+
+func TestBuiltinAliasesMatchPluginRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   plugins.PluginID
+		ops  []plugins.Operation
+		args []string
+	}{
+		{"docker default", plugins.PluginDocker, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{}), op(plugins.OperationRuntime, true, plugins.SupportedOptions{})}, nil},
+		{"docker explicit", plugins.PluginDocker, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{}), op(plugins.OperationRuntime, false, plugins.SupportedOptions{})}, []string{"runtime"}},
+		{"bazel default", plugins.PluginBazel, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{Path: true, TopN: true})}, []string{"--path=/tmp", "--top=7"}},
+		{"bazel explicit", plugins.PluginBazel, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{Path: true, TopN: true})}, []string{"disk", "--path=/tmp", "--top=7"}},
+		{"docker invalid options", plugins.PluginDocker, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}, []string{"--top=7"}},
+		{"bazel invalid options", plugins.PluginBazel, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}, []string{"disk", "--path=/tmp"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := func(prefix []string) (int, string, string, []plugins.Request) {
+				p := &fakePlugin{descriptor: plugins.Descriptor{ID: tc.id, Operations: tc.ops}}
+				var out, errOut bytes.Buffer
+				args := append(prefix, tc.args...)
+				code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errOut, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+				return code, out.String(), errOut.String(), p.calls
+			}
+			legacy := []string{"plugins", "run", string(tc.id)}
+			alias := []string{string(tc.id)}
+			oldCode, oldOut, oldErr, oldCalls := run(legacy)
+			newCode, newOut, newErr, newCalls := run(alias)
+			if oldCode != newCode || oldOut != newOut || oldErr != newErr || !reflect.DeepEqual(oldCalls, newCalls) {
+				t.Fatalf("alias mismatch: old=(%d,%q,%q,%+v) new=(%d,%q,%q,%+v)", oldCode, oldOut, oldErr, oldCalls, newCode, newOut, newErr, newCalls)
+			}
+		})
+	}
 }
 func run(args []string, d Deps) (int, string, string) {
 	var out, err bytes.Buffer
@@ -72,6 +107,30 @@ func TestHelpErrorsAndVersion(t *testing.T) {
 	var b bytes.Buffer
 	if Run(context.Background(), RunConfig{Args: []string{"--version"}, Out: &b, ErrOut: &b, Deps: d, Version: "v1.2"}) != 0 || !strings.Contains(b.String(), "v1.2") {
 		t.Fatal("version")
+	}
+}
+
+func TestBuiltInAliasHelpAndDispatchErrors(t *testing.T) {
+	d, _, _ := fixtures()
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{{[]string{"--help"}, "daffy docker [disk|runtime|config]"}, {[]string{"docker", "--help"}, "Usage: daffy docker"}, {[]string{"bazel", "--help"}, "Usage: daffy bazel"}} {
+		code, out, _ := run(tc.args, d)
+		if code != 0 || !strings.Contains(out, tc.want) {
+			t.Errorf("%v help: exit %d output %q", tc.args, code, out)
+		}
+	}
+	for _, item := range []struct {
+		args []string
+		id   plugins.PluginID
+	}{{[]string{"docker", "unknown"}, plugins.PluginDocker}, {[]string{"bazel", "unknown"}, plugins.PluginBazel}} {
+		p := &fakePlugin{descriptor: plugins.Descriptor{ID: item.id, Operations: []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}}}
+		d.Plugins = fakeRegistry(t, p)
+		code, _, errOut := run(item.args, d)
+		if code != 2 || !strings.Contains(errOut, "unknown operation") {
+			t.Errorf("%v dispatch: %d %q", item.args, code, errOut)
+		}
 	}
 }
 func TestJSONSchemaCleanAndSorted(t *testing.T) {

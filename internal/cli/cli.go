@@ -29,9 +29,12 @@ Usage: daffy [scan] [options]
        daffy watch [options]
        daffy doctor [options]
        daffy disk scan [path] [options]
+       daffy disk [path] [options]
+       daffy docker [disk|runtime|config] [options]
+       daffy bazel [disk] [options]
        daffy plugins list|run ...
 
-Commands: scan (default), watch, report, doctor, disk scan, plugins
+Commands: scan (default), watch, report, doctor, disk, docker, bazel, plugins
 Options: --sample duration --timeout duration --include-sensitive --privileged
          --json (scan/report; watch emits NDJSON) --interval duration (watch)
 Exit codes: 0 completed (findings do not fail), 1 execution failure, 2 usage error.
@@ -60,6 +63,8 @@ const (
 	commandReport command = "report"
 	commandDoctor command = "doctor"
 	commandDisk   command = "disk"
+	commandDocker command = "docker"
+	commandBazel  command = "bazel"
 )
 
 type exitCode int
@@ -112,6 +117,22 @@ func Run(ctx context.Context, rc RunConfig) int {
 	}
 	if len(args) > 0 && args[0] == pluginCommand {
 		return runPlugins(ctx, args[1:], out, errOut, deps.Plugins)
+	}
+	if len(args) > 0 {
+		switch command(args[0]) {
+		case commandDocker:
+			if isHelp(args[1:]) {
+				fmt.Fprint(out, dockerAliasUsage)
+				return int(exitSuccess)
+			}
+			return runPlugin(ctx, aliasPluginArgs(plugins.PluginDocker, args[1:]), out, errOut, deps.Plugins)
+		case commandBazel:
+			if isHelp(args[1:]) {
+				fmt.Fprint(out, bazelAliasUsage)
+				return int(exitSuccess)
+			}
+			return runPlugin(ctx, aliasPluginArgs(plugins.PluginBazel, args[1:]), out, errOut, deps.Plugins)
+		}
 	}
 	cmd := commandScan
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -189,6 +210,14 @@ func Run(ctx context.Context, rc RunConfig) int {
 		}
 	}
 	return int(exitSuccess)
+}
+
+func isHelp(args []string) bool {
+	return len(args) > 0 && (args[0] == "-h" || args[0] == "--help")
+}
+
+func aliasPluginArgs(name plugins.PluginID, args []string) []string {
+	return append([]string{string(name)}, args...)
 }
 func failed(w io.Writer, e error) int { fmt.Fprintln(w, "daffy:", e); return int(exitFailure) }
 func interrupted(w io.Writer, e error) int {
