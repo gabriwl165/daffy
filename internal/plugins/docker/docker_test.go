@@ -115,38 +115,54 @@ func TestConfigEmptyAndPartialInspect(t *testing.T) {
 
 func TestConfigFailureDiagnostics(t *testing.T) {
 	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	rows := `[{"Id":"` + id + `","Name":"/oom","State":{"Status":"exited","OOMKilled":true,"ExitCode":137},"HostConfig":{"Memory":1,"Privileged":false}},{"Id":"` + id + `","Name":"/history","State":{"Status":"running","OOMKilled":false,"ExitCode":0},"HostConfig":{"Memory":1,"Privileged":false}}]`
-	// Duplicate IDs are invalid in one batch; exercise independent inspect runs.
-	check := func(name, status, extra string, wantWarn, wantInfo bool) {
-		t.Helper()
-		payload := `[{"Id":"` + id + `","Name":"/` + name + `","RestartCount":2,"State":{"Status":"` + status + `",` + extra + `},"HostConfig":{"Memory":1,"Privileged":false}}]`
-		r := &fakeRunner{outputs: [][]byte{[]byte(id + "\n"), []byte(payload)}}
-		o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(o.Details.Docker.Config) != 1 {
-			t.Fatalf("config: %+v", o)
-		}
-		for _, f := range o.Findings {
-			if f.Code == findingContainerFailure && (f.Severity == plugins.SeverityWarning) != wantWarn {
-				t.Fatalf("unexpected finding: %+v", f)
-			}
-			if f.Code == findingContainerFailure && wantWarn && f.Recommendation == "" {
-				t.Fatalf("missing recommendation: %+v", f)
-			}
-			if f.Code == findingContainerFailure && strings.Contains(f.Summary, "historically") && !wantInfo {
-				t.Fatalf("unexpected historical report: %+v", f)
-			}
-		}
-		if wantInfo && !strings.Contains(o.Findings[len(o.Findings)-1].Summary, "historically") {
-			t.Fatalf("historical count not qualified: %+v", o.Findings)
-		}
+	cases := []struct {
+		name, status, fields              string
+		restarts                          int
+		failure, severity, recommendation string
+	}{
+		{"oom", "exited", `,"OOMKilled":true,"ExitCode":137`, 0, "out-of-memory", string(plugins.SeverityWarning), "Review memory"},
+		{"exit", "exited", `,"OOMKilled":false,"ExitCode":2`, 0, "exit code 2", string(plugins.SeverityWarning), "Review the container logs"},
+		{"dead", "dead", `,"ExitCode":9`, 0, "exit code 9", string(plugins.SeverityWarning), "Review the container logs"},
+		{"running", "running", `,"ExitCode":3`, 0, "", "", ""},
+		{"absent", "running", "", 0, "", "", ""},
+		{"history", "running", `,"OOMKilled":false,"ExitCode":0`, 2, "historically", string(plugins.SeverityInfo), ""},
 	}
-	_ = rows
-	check("oom", "exited", `"OOMKilled":true,"ExitCode":137`, true, false)
-	check("old", "running", `"OOMKilled":false,"ExitCode":0`, false, true)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := fmt.Sprintf(`[{"Id":%q,"Name":%q,"RestartCount":%d,"State":{"Status":%q%s},"HostConfig":{"Memory":1,"Privileged":false}}]`, id, "/"+tc.name, tc.restarts, tc.status, tc.fields)
+			o, err := New(&fakeRunner{outputs: [][]byte{[]byte(id + "\n"), []byte(payload)}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := o.Details.Docker.Config[0]
+			if tc.fields == "" && (cfg.OOMKilled != nil || cfg.ExitCode != nil) {
+				t.Fatalf("absent fields: %+v", cfg)
+			}
+			var f *plugins.Finding
+			for i := range o.Findings {
+				if o.Findings[i].Code == findingContainerFailure {
+					f = &o.Findings[i]
+				}
+			}
+			if tc.failure == "" {
+				if f != nil {
+					t.Fatalf("unexpected failure finding: %+v", f)
+				}
+				return
+			}
+			if f == nil || !strings.Contains(f.Summary, tc.failure) || string(f.Severity) != tc.severity {
+				t.Fatalf("missing expected finding: %+v", o.Findings)
+			}
+			if tc.recommendation != "" && (f.Recommendation == "" || !strings.Contains(f.Recommendation, tc.recommendation)) {
+				t.Fatalf("recommendation missing: %+v", f)
+			}
+			if tc.restarts > 0 && (!strings.Contains(f.Summary, "historically")) {
+				t.Fatalf("historical wording: %+v", f)
+			}
+		})
+	}
 }
+
 func TestAnalyzeValidationAndCommandRunner(t *testing.T) {
 	r := &fakeRunner{}
 	p := New(r)

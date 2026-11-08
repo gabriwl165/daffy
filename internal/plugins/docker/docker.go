@@ -390,7 +390,7 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnlimitedMemory, Severity: plugins.SeverityInfo, Summary: fmt.Sprintf("Container %s (%s) has no memory limit", cfg.Name, id)})
 			}
 			if cfg.Health == stateUnhealthy || cfg.Status == stateRestarting {
-				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnhealthy, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) is unhealthy or restarting", cfg.Name, id)})
+				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnhealthy, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) is unhealthy or restarting", cfg.Name, id), Recommendation: "Inspect the health check and recent logs; verify the service before restarting."})
 			}
 			if cfg.OOMKilled != nil && *cfg.OOMKilled {
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingContainerFailure, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) was killed after an out-of-memory event", cfg.Name, id), Recommendation: "Review memory usage and limits, then verify the workload before restarting."})
