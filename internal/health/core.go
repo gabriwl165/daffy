@@ -82,7 +82,17 @@ func collectCore(ctx context.Context, opts Options) Report {
 		}
 		r.Findings = append(r.Findings, Finding{ID: id, Area: area, Severity: sev, Summary: summary, Evidence: evidence, Recommendation: recommendation, Confidence: map[string]string{coreUnknown: "low", coreOK: "medium", coreWarn: "medium", coreCrit: "high"}[sev]})
 	}
-	r.System["os"], _ = coreOSName(filepath.Join(etc, "os-release"))
+	osRelease, _ := parseOSRelease(filepath.Join(etc, "os-release"))
+	r.System["os"] = osRelease["PRETTY_NAME"]
+	adapter := selectDistroAdapter(osRelease["ID"])
+	r.System["distro_id"] = osRelease["ID"]
+	if r.System["distro_id"] == "" {
+		r.System["distro_id"] = coreUnknown
+	}
+	r.System["distro_adapter"] = adapter.Name()
+	if version := osRelease["VERSION_ID"]; version != "" {
+		r.System["distro_version"] = version
+	}
 	r.System["kernel"], _ = coreReadTrim(filepath.Join(proc, "sys/kernel/osrelease"))
 	if b, err := os.ReadFile(filepath.Join(proc, "cpuinfo")); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
@@ -262,17 +272,14 @@ func coreParseProcStat(line string) (coreProc, error) {
 }
 
 func coreOSName(path string) (string, error) {
-	b, e := os.ReadFile(path)
-	if e != nil {
-		return "", e
+	m, err := parseOSRelease(path)
+	if err != nil {
+		return "", err
 	}
-	for _, l := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(l, "PRETTY_NAME=") {
-			v := strings.TrimPrefix(l, "PRETTY_NAME=")
-			return strings.Trim(v, "\"'"), nil
-		}
+	if m["PRETTY_NAME"] == "" {
+		return "", fmt.Errorf("PRETTY_NAME unavailable")
 	}
-	return "", fmt.Errorf("PRETTY_NAME unavailable")
+	return m["PRETTY_NAME"], nil
 }
 func coreReadCounters(path string) (map[string]uint64, error) {
 	b, e := os.ReadFile(path)

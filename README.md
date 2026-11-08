@@ -50,6 +50,20 @@ and unsupported sensors produce **unknown**, never a fabricated healthy result.
 Optional tools include `journalctl`, `systemctl`, `systemd-analyze`,
 `powerprofilesctl`, `sensors`, `lspci`, and `smartctl`. Daffy does not install them.
 
+### Distribution adapters
+
+Ubuntu (`ID=ubuntu`) and Zorin OS (`ID=zorin`) have explicit adapters selected
+from `/etc/os-release`. They share Linux collectors and Ubuntu-family package
+guidance for missing optional tools in `doctor`; no packages are installed.
+Zorin is selected by its own ID, not treated as Ubuntu because of `ID_LIKE`.
+Other distributions and missing or invalid identities use a generic Linux
+adapter without Ubuntu-specific package guidance.
+
+JSON `system` metadata includes `distro_id`, `distro_adapter`, and, when
+available, `distro_version`. The existing `os` display name is preserved.
+`doctor` also identifies the selected adapter. Supporting another distribution
+means adding an adapter to the registry, not branching inside shared collectors.
+
 ## Safety and privacy
 
 - No stress tests, process killing, automatic repairs, package installation,

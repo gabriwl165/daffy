@@ -333,7 +333,13 @@ func integrationSMARTStatus(output string) (severity, summary string, recognized
 
 // Doctor reports platform, filesystem and optional-tool availability without running diagnostics.
 func Doctor(ctx context.Context, o Options) []Check {
-	checks := []Check{{Name: "linux", Available: runtime.GOOS == "linux", Detail: runtime.GOOS}}
+	etc := o.EtcRoot
+	if etc == "" {
+		etc = "/etc"
+	}
+	distro, _ := parseOSRelease(filepath.Join(etc, "os-release"))
+	adapter := selectDistroAdapter(distro["ID"])
+	checks := []Check{{Name: "linux", Available: runtime.GOOS == "linux", Detail: runtime.GOOS}, {Name: "distro", Available: true, Detail: adapter.Name()}}
 	for _, item := range []struct{ name, root string }{{"procfs", o.ProcRoot}, {"sysfs", o.SysRoot}} {
 		root := item.root
 		if root == "" {
@@ -347,7 +353,13 @@ func Doctor(ctx context.Context, o Options) []Check {
 	}
 	for _, tool := range []string{"journalctl", "systemctl", "systemd-analyze", "powerprofilesctl", "sensors", "lspci", "smartctl"} {
 		_, err := exec.LookPath(tool)
-		checks = append(checks, Check{Name: tool, Available: err == nil, Detail: map[bool]string{true: tool, false: "unavailable"}[err == nil]})
+		detail := map[bool]string{true: tool, false: "unavailable"}[err == nil]
+		if err != nil {
+			if pkg := adapter.Package(tool); pkg != "" {
+				detail += "; optional package: " + pkg
+			}
+		}
+		checks = append(checks, Check{Name: tool, Available: err == nil, Detail: detail})
 	}
 	checks = append(checks, Check{Name: "privileged-smart", Available: os.Geteuid() == 0, Detail: fmt.Sprintf("effective uid %d", os.Geteuid())})
 	_ = ctx
