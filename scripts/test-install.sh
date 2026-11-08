@@ -12,6 +12,17 @@ hash_files() {
   else echo "sha256sum or shasum is required" >&2; return 1; fi
 }
 mkdir -p "$tmp/mock" "$tmp/home with spaces" "$tmp/input" "$tmp/temp"
+mkdir -p "$tmp/home with spaces/.config"
+printf 'export TEST_PROFILE=untouched\n' >"$tmp/home with spaces/.profile"
+printf 'export TEST_RC=untouched\n' >"$tmp/home with spaces/.bashrc"
+cp "$tmp/home with spaces/.profile" "$tmp/profile.expected"
+cp "$tmp/home with spaces/.bashrc" "$tmp/bashrc.expected"
+cat >"$tmp/mock/hostile-editor" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$0 $*" >>"$EDITOR_LOG"
+exit 99
+EOF
+chmod +x "$tmp/mock/hostile-editor"
 cat >"$tmp/mock/uname" <<'EOF'
 #!/bin/sh
 case "$1" in -s) echo "${MOCK_OS:-$("$REAL_UNAME" -s)}";; -m) echo "${MOCK_ARCH:-$("$REAL_UNAME" -m)}";; esac
@@ -39,11 +50,12 @@ if ! command -v sha256sum >/dev/null 2>&1; then
   printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' >"$tmp/mock/sha256sum"
 fi
 chmod +x "$tmp/mock/"*
-printf '#!/bin/sh\necho fixture\n' >"$tmp/input/daffy"
+printf '#!/bin/sh\necho fixture-one\n' >"$tmp/input/daffy"
 chmod +x "$tmp/input/daffy"
 for archive in daffy_linux_amd64 daffy_linux_arm64 daffy_darwin_amd64 daffy_darwin_arm64; do tar -czf "$tmp/$archive.tar.gz" -C "$tmp/input" daffy; done
 (cd "$tmp" && hash_files daffy_linux_*.tar.gz daffy_darwin_*.tar.gz >SHA256SUMS)
-export FIXTURE_DIR="$tmp" CURL_LOG="$tmp/curl.log" TMPDIR="$tmp/temp" REAL_UNAME REAL_HOST_OS="$host_os"
+export FIXTURE_DIR="$tmp" CURL_LOG="$tmp/curl.log" TMPDIR="$tmp/temp" REAL_UNAME REAL_HOST_OS="$host_os" EDITOR_LOG="$tmp/editor.log"
+export EDITOR="$tmp/mock/hostile-editor" VISUAL="$tmp/mock/hostile-editor" PAGER="$tmp/mock/hostile-editor"
 export PATH="$tmp/mock:$PATH"
 # First exercise the actual host uname, checksum utility, and mv implementation.
 case "$host_os:$host_arch" in
@@ -53,8 +65,20 @@ case "$host_os:$host_arch" in
   Darwin:x86_64|Darwin:amd64) native_os=Darwin; native_arch=amd64; native_platform=darwin;;
   *) echo "unsupported test host: $host_os/$host_arch" >&2; exit 1;;
 esac
-HOME="$tmp/home with spaces" sh "$root/setup.sh" >/dev/null
+HOME="$tmp/home with spaces" sh "$root/setup.sh" </dev/null >"$tmp/install.log"
 [ -x "$tmp/home with spaces/.local/bin/daffy" ]
+"$tmp/home with spaces/.local/bin/daffy" | grep -q fixture-one
+grep -q 'Downloading daffy release archive' "$tmp/install.log"
+grep -q 'Verifying release checksum' "$tmp/install.log"
+printf '#!/bin/sh\necho fixture-two\n' >"$tmp/input/daffy"
+chmod +x "$tmp/input/daffy"
+for archive in daffy_linux_amd64 daffy_linux_arm64 daffy_darwin_amd64 daffy_darwin_arm64; do tar -czf "$tmp/$archive.tar.gz" -C "$tmp/input" daffy; done
+(cd "$tmp" && hash_files daffy_linux_*.tar.gz daffy_darwin_*.tar.gz >SHA256SUMS)
+HOME="$tmp/home with spaces" sh "$root/setup.sh" </dev/null >"$tmp/update.log"
+"$tmp/home with spaces/.local/bin/daffy" | grep -q fixture-two
+[ ! -e "$EDITOR_LOG" ]
+cmp "$tmp/profile.expected" "$tmp/home with spaces/.profile"
+cmp "$tmp/bashrc.expected" "$tmp/home with spaces/.bashrc"
 grep -q "${native_platform}_${native_arch}.tar.gz" "$CURL_LOG"
 MOCK_OS=Linux MOCK_ARCH=x86_64 HOME="$tmp/home with spaces" sh "$root/setup.sh" >/dev/null
 MOCK_OS=Linux MOCK_ARCH=x86_64 INSTALL_DIR="$tmp/custom path" sh "$root/setup.sh" --version "build-$(printf '%040d' 1)" >/dev/null
