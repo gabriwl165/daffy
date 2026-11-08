@@ -15,6 +15,9 @@ func collectDarwin(ctx context.Context, opts Options) Report {
 func collectDarwinWith(ctx context.Context, opts Options, run integrationExecutor) Report {
 	started := time.Now()
 	read := func(key darwinSysctlKey) integrationResult {
+		if err := ctx.Err(); err != nil {
+			return integrationResult{err: err}
+		}
 		return run(ctx, commandConfig{Timeout: opts.CommandTimeout, Tool: darwinSysctlCommand, Args: []string{"-n", string(key)}})
 	}
 	kernel := darwinValue(read(darwinKernelKey))
