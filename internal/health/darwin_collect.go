@@ -52,6 +52,7 @@ type darwinSamples struct {
 	Memory            *macos.MemoryUsage
 	MemoryErr         error
 	SwapErr           error
+	Disk              *macos.DiskUsage
 }
 
 func darwinReport(kernel, cpu, arch string, mem integrationResult, samples darwinSamples) Report {
@@ -75,7 +76,6 @@ func darwinReport(kernel, cpu, arch string, mem integrationResult, samples darwi
 		{darwinFindingProcessCPU, AreaProcess, "Per-process CPU sampling unavailable"},
 		{darwinFindingThermalTemperature, AreaThermal, "Temperature sensors unavailable"},
 		{darwinFindingThermalThrottle, AreaThermal, "Thermal throttle counters unavailable"},
-		{darwinFindingDiskActivity, AreaDisk, "Disk activity counters unavailable"},
 		{darwinFindingPressureCPU, AreaPressure, "CPU pressure unavailable"},
 		{darwinFindingPressureMemory, AreaPressure, "Memory pressure unavailable"},
 		{darwinFindingPressureIO, AreaPressure, "I/O pressure unavailable"},
@@ -95,6 +95,16 @@ func darwinReport(kernel, cpu, arch string, mem integrationResult, samples darwi
 		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingMemorySwap), Area: AreaMemory, Severity: SeverityInfo, Summary: fmt.Sprintf("Swap usage: %d MiB used of %d MiB", m.SwapUsedBytes/(1024*1024), m.SwapTotalBytes/(1024*1024)), Evidence: []string{fmt.Sprintf("total_bytes=%d used_bytes=%d free_bytes=%d", m.SwapTotalBytes, m.SwapUsedBytes, m.SwapFreeBytes)}, Confidence: ConfidenceMedium})
 	} else {
 		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingMemorySwap), Area: AreaMemory, Severity: SeverityUnknown, Summary: "Swap usage unavailable", Confidence: ConfidenceLow})
+	}
+	if samples.Disk != nil {
+		var evidence []string
+		for _, d := range samples.Disk.Devices {
+			evidence = append(evidence, fmt.Sprintf("device=%s KB/t=%.3f t/s=%.3f MB/s=%.3f", d.Device, d.KilobytesPerTransfer, d.TransfersPerSecond, d.MegabytesPerSecond))
+		}
+		evidence = append(evidence, fmt.Sprintf("sample_interval=%s coverage=%s", samples.Disk.SampleInterval, samples.Disk.CoverageNote))
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingDiskActivity), Area: AreaDisk, Severity: SeverityInfo, Summary: "Disk activity rates from the second iostat interval; does not measure utilization, latency, or device health", Evidence: evidence, Confidence: ConfidenceMedium})
+	} else {
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingDiskActivity), Area: AreaDisk, Severity: SeverityUnknown, Summary: "Disk activity unavailable", Confidence: ConfidenceLow})
 	}
 	if samples.CPU != nil {
 		u := samples.CPU

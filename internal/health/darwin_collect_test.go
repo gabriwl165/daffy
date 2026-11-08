@@ -71,6 +71,33 @@ func TestDarwinMemoryFindingsIndependentAndUnique(t *testing.T) {
 	}
 }
 
+func TestDarwinDiskFindingUnique(t *testing.T) {
+	d := &macos.DiskUsage{Devices: []macos.DiskDeviceActivity{{Device: "disk0", KilobytesPerTransfer: 1, TransfersPerSecond: 2, MegabytesPerSecond: 3}}, SampleInterval: time.Second, DeviceLimit: 32, CoverageNote: "second sample"}
+	r := darwinReport("", "", "arm64", integrationResult{}, darwinSamples{Disk: d})
+	count := 0
+	for _, f := range r.Findings {
+		if f.ID == string(darwinFindingDiskActivity) {
+			count++
+			if f.Severity != SeverityInfo || len(f.Evidence) != 2 {
+				t.Fatalf("disk finding: %+v", f)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("disk activity finding count %d", count)
+	}
+	r = darwinReport("", "", "arm64", integrationResult{}, darwinSamples{})
+	count = 0
+	for _, f := range r.Findings {
+		if f.ID == string(darwinFindingDiskActivity) && f.Severity == SeverityUnknown {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("unknown disk finding count %d", count)
+	}
+}
+
 func TestDarwinReportCapacityAndUnknowns(t *testing.T) {
 	valid := darwinReport("24.1", "Apple CPU", "arm64", integrationResult{stdout: []byte("17179869184\n")}, darwinSamples{})
 	if valid.System.Kernel != "24.1" || valid.System.CPUModel != "Apple CPU" || valid.Findings[0].Severity != SeverityInfo {
