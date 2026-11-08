@@ -15,6 +15,7 @@ daffy --version | grep -q '^daffy '
 daffy scan --sample "$sample" --timeout 1s --json >"$tmp/scan.json"
 daffy report --sample "$sample" --timeout 1s --json >"$tmp/report.json"
 daffy doctor --sample "$sample" --timeout 1s --json >"$tmp/doctor.json"
+daffy disk scan /usr/local/bin --format json --top 2 >"$tmp/disk.json"
 
 # Require parseable reports and exact identity/adapter metadata; do not infer health from exit status.
 python3 - "$tmp/report.json" "$tmp/doctor.json" "$expected_id" "$expected_adapter" "$tmp/scan.json" <<'PY'
@@ -32,4 +33,17 @@ scan = json.load(open(sys.argv[5]))
 assert isinstance(scan.get("findings"), list), scan
 assert scan.get("system", {}).get("distro_id") == sys.argv[3], scan
 assert scan.get("system", {}).get("distro_adapter") == sys.argv[4], scan
+PY
+
+# Check disk command contracts against the image, not host disks or writable data.
+python3 - "$tmp/disk.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as source:
+    report = json.load(source)
+assert report["root"] == "/usr/local/bin", report
+assert report["coverage"]["complete"] is True, report
+assert report["coverage"]["files"] >= 1, report
+assert 1 <= len(report["top_files"]) <= 2, report
+assert report["totals"]["allocated_bytes"] >= 0, report
+assert report["candidates"] == [] or report["candidates"] is None, report
 PY

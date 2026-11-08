@@ -6,13 +6,13 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 type linuxScanner struct{}
 
-func newScanner() Scanner { return &scanner{platform: linuxScanner{}} }
 func (linuxScanner) Mounts() ([]Mount, error) {
 	f, e := os.Open("/proc/self/mountinfo")
 	if e != nil {
@@ -41,20 +41,36 @@ func ParseMountInfo(r interface{ Read([]byte) (int, error) }) ([]Mount, error) {
 		if sep < 6 || len(fields) < sep+4 {
 			return nil, fmt.Errorf("mountinfo line %d malformed", line)
 		}
-		m := Mount{Root: unescapeMount(fields[3]), Path: unescapeMount(fields[4]), Device: fields[2], Filesystem: fields[sep+1], Source: unescapeMount(fields[sep+2]), Eligible: true}
-		if m.Path == "" || m.Path[0] != '/' {
+		root, e := unescapeMount(fields[3])
+		if e != nil {
+			return nil, fmt.Errorf("mountinfo line %d root: %w", line, e)
+		}
+		path, e := unescapeMount(fields[4])
+		if e != nil {
+			return nil, fmt.Errorf("mountinfo line %d mountpoint: %w", line, e)
+		}
+		source, e := unescapeMount(fields[sep+2])
+		if e != nil {
+			return nil, fmt.Errorf("mountinfo line %d source: %w", line, e)
+		}
+		m := Mount{Root: root, Path: path, Device: fields[2], Filesystem: Filesystem(fields[sep+1]), Source: source, Eligible: true}
+		if m.Path == "" || m.Path[0] != '/' || filepath.Clean(m.Path) != m.Path || filepath.Clean(m.Root) != m.Root {
 			return nil, fmt.Errorf("mountinfo line %d has invalid mountpoint", line)
 		}
-		switch m.Filesystem {
-		case "proc", "sysfs", "devpts", "devtmpfs", "cgroup", "cgroup2", "securityfs", "debugfs", "tracefs", "configfs", "pstore", "mqueue", "fusectl", "rpc_pipefs", "squashfs", "nfs", "nfs4", "cifs", "smb3", "9p", "autofs":
+		if !eligible(m) {
 			m.Eligible = false
-			m.Reason = "virtual, network, or read-only image filesystem"
+			m.SkipReason = SkipUnsupportedFilesystem
+			m.Reason = "virtual, network, removable, or unsupported filesystem"
 		}
-		for _, opt := range strings.Split(fields[5], ",") {
-			if opt == "ro" {
-				m.Eligible = false
-				m.Reason = "read-only filesystem"
-			}
+		if m.Filesystem == FilesystemOverlay && m.Path != "/" {
+			m.Eligible = false
+			m.SkipReason = SkipNestedOverlay
+			m.Reason = "nested overlay filesystem"
+		}
+		if removablePath(m.Path) {
+			m.Eligible = false
+			m.SkipReason = SkipRemovable
+			m.Reason = "removable media mount path"
 		}
 		out = append(out, m)
 	}
@@ -63,17 +79,21 @@ func ParseMountInfo(r interface{ Read([]byte) (int, error) }) ([]Mount, error) {
 	}
 	return out, nil
 }
-func unescapeMount(s string) string {
+func unescapeMount(s string) (string, error) {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+3 < len(s) {
-			if n, e := strconv.ParseUint(s[i+1:i+4], 8, 8); e == nil {
+		if s[i] == '\\' {
+			if i+3 >= len(s) {
+				return "", fmt.Errorf("truncated escape")
+			}
+			if n, e := strconv.ParseUint(s[i+1:i+4], 8, 8); e == nil && (n == 040 || n == 011 || n == 012 || n == 0134) {
 				b.WriteByte(byte(n))
 				i += 3
 				continue
 			}
+			return "", fmt.Errorf("invalid escape %q", s[i:i+4])
 		}
 		b.WriteByte(s[i])
 	}
-	return b.String()
+	return b.String(), nil
 }

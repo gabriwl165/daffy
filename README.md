@@ -68,6 +68,8 @@ daffy watch --interval 5s          # Repeated, interruptible observations
 daffy report --json                # One JSON report on stdout
 daffy watch --json                 # One JSON report per line (NDJSON)
 daffy doctor                       # Capabilities, tools, and permissions
+daffy disk scan                    # Space hotspots across eligible local mounts
+daffy disk scan /home --format json # Narrow the scope; flags may follow the path
 daffy plugins list                 # Available built-in domain analyses
 daffy plugins run docker           # Docker's default diagnostic bundle
 daffy plugins run bazel --path DIR  # Inspect an explicit output/cache directory
@@ -85,6 +87,31 @@ usage exits 2. Interrupted commands exit 130.
 
 See [analysis plugins](docs/plugins.md) for Docker and Bazel scope, safety, and
 extension architecture. Plugins run only when explicitly requested.
+
+### Disk space profiling
+
+`daffy disk scan` is an explicit, read-only filesystem traversal, separate from
+the default health scan. Omit the path to discover eligible local filesystems in
+the current mount namespace, or supply a directory to narrow the scan:
+
+```sh
+daffy disk scan --exclude /srv/archive --time-budget 2m
+daffy disk scan "$HOME" --top 10
+daffy disk scan /var --format json
+```
+
+The report ranks files and directory trees by observed allocated space, reports
+filesystem capacity and inodes, and suggests conservative cleanup actions for
+known locations. It never runs those actions. Allocated bytes are not guaranteed
+reclaimable bytes; parent and child directory totals overlap.
+
+Whole-machine scans can be expensive. Symlinks are not followed, excluded mounts
+are not traversed, and permission failures are reported as incomplete coverage.
+A time budget returns partial results with a nonzero exit code; cancellation
+also preserves partial results. Budgets are checked between I/O operations, not
+guaranteed to interrupt blocked kernel calls. Paths can reveal personal data.
+See [disk profiling](docs/disk-profiling.md) for scope, accounting, portability,
+and safety limits.
 
 ## Coverage
 
@@ -201,6 +228,7 @@ Structure:
 cmd/daffy/          entry point and signal handling
 internal/cli/       commands and human/machine-readable presentation
 internal/health/    report model, Linux collectors, optional integrations
+internal/disk/      portable disk contracts, Linux platform, read-only profiler
 internal/distribution/ typed distro profiles and tool identities
   ubuntu/           Ubuntu-specific profile construction
   zorin/            Zorin-specific profile construction

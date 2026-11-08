@@ -283,7 +283,7 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 				return e
 			}
 			for _, issue := range v.Issues {
-				if _, e := fmt.Fprintf(w, "  Scan issue: %s: %s: %s\n", safe(issue.Path), safe(issue.Operation), safe(issue.Error)); e != nil {
+				if _, e := fmt.Fprintf(w, "  Scan issue: %s: %s: %s\n", safe(issue.Path), safe(string(issue.Operation)), safe(issue.Error)); e != nil {
 					return e
 				}
 			}

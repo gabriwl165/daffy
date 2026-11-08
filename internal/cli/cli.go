@@ -28,9 +28,10 @@ Usage: daffy [scan] [options]
        daffy report --json [options]
        daffy watch [options]
        daffy doctor [options]
+       daffy disk scan [path] [options]
        daffy plugins list|run ...
 
-Commands: scan (default), watch, report, doctor, plugins
+Commands: scan (default), watch, report, doctor, disk scan, plugins
 Options: --sample duration --timeout duration --include-sensitive --privileged
          --json (scan/report; watch emits NDJSON) --interval duration (watch)
 Exit codes: 0 completed (findings do not fail), 1 execution failure, 2 usage error.
@@ -40,6 +41,7 @@ No files are written. Sensitive log collection and root checks require explicit 
 type Deps struct {
 	Collect func(context.Context, health.Options) health.Report
 	Doctor  func(context.Context, health.Options) []health.Check
+	Disk    disk.Scanner
 	Plugins *plugins.Registry
 }
 
@@ -57,6 +59,7 @@ const (
 	commandWatch  command = "watch"
 	commandReport command = "report"
 	commandDoctor command = "doctor"
+	commandDisk   command = "disk"
 )
 
 type exitCode int
@@ -69,12 +72,12 @@ const (
 )
 
 func DefaultDeps() Deps {
-	r, err := plugins.NewRegistry(docker.New(docker.NewCommandRunner()), bazel.New(disk.NewScanner()))
+	scanner := disk.NewScanner()
+	r, err := plugins.NewRegistry(docker.New(docker.NewCommandRunner()), bazel.New(scanner))
 	if err != nil {
-		// Built-in descriptors are programming-time constants, not user input.
 		panic("invalid built-in plugin registry: " + err.Error())
 	}
-	return Deps{Collect: health.Collect, Doctor: health.Doctor, Plugins: r}
+	return Deps{Collect: health.Collect, Doctor: health.Doctor, Disk: scanner, Plugins: r}
 }
 
 type config struct {
@@ -112,6 +115,9 @@ func Run(ctx context.Context, rc RunConfig) int {
 	}
 	cmd := commandScan
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		if args[0] == string(commandDisk) {
+			return runDisk(ctx, args[1:], out, errOut, deps)
+		}
 		switch args[0] {
 		case string(commandScan), string(commandWatch), string(commandReport), string(commandDoctor):
 			cmd = command(args[0])
