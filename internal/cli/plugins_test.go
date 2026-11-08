@@ -88,11 +88,11 @@ func runFake(t *testing.T, p *fakePlugin, args ...string) (int, string, string) 
 }
 
 func TestDockerTargetFlagsReachPluginsRunAndAlias(t *testing.T) {
-	for _, args := range [][]string{{"plugins", "run", "docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop"}, {"docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop"}} {
-		p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationRuntime, true, plugins.SupportedOptions{Context: true, Containers: true, Project: true})}}}
+	for _, args := range [][]string{{"plugins", "run", "docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop", "--samples", "2", "--interval", "100ms"}, {"docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop", "--samples", "2", "--interval", "100ms"}} {
+		p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationRuntime, true, plugins.SupportedOptions{Context: true, Containers: true, Project: true, RuntimeTrends: true})}}}
 		var out, errOut bytes.Buffer
 		code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errOut, Deps: Deps{Plugins: fakeRegistry(t, p)}})
-		if code != 0 || len(p.calls) != 1 || p.calls[0].Options.Context != "local-dev" || strings.Join(p.calls[0].Options.Containers, ",") != "api,worker" || p.calls[0].Options.Project != "shop" {
+		if code != 0 || len(p.calls) != 1 || p.calls[0].Options.Context != "local-dev" || strings.Join(p.calls[0].Options.Containers, ",") != "api,worker" || p.calls[0].Options.Project != "shop" || p.calls[0].Options.Samples != 2 || p.calls[0].Options.Interval != 100*time.Millisecond {
 			t.Fatalf("args=%v code=%d request=%#v err=%s", args, code, p.calls, errOut.String())
 		}
 	}
