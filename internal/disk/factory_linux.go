@@ -3,5 +3,5 @@
 package disk
 
 func newScanner() Scanner {
-	return &scanner{platform: linuxScanner{}}
+	return &scanner{platform: linuxScanner{}, candidate: candidateForDirectory}
 }
