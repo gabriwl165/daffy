@@ -103,6 +103,26 @@ Timeout/cancellation preserves collected peaks and the completed sample count.
 Runtime-only flags require an explicit `runtime` operation and work with context,
 container, and project selection. Without them, collection stays a single snapshot.
 
+Disk drill-down is also opt-in:
+
+```sh
+daffy docker disk --details --context default --timeout 60s --json
+```
+
+The usual category summary is collected first. A second verbose query selects
+image, container, volume, and build-cache details into typed rows; unknown fields
+(including raw labels and mountpoints) are discarded. Sizes and `N/A` values
+remain Docker-formatted strings, not exact byte accounting. Shared image layers,
+volume link counts, and cache in-use fields are not deletion-safety guarantees.
+Daffy does not prune resources or recommend deleting volume data.
+
+The verbose parser follows Docker CLI v29.1.3's single-envelope JSON formatter;
+other response shapes produce an incomplete report rather than a healthy empty
+result. Collection shares the operation's remaining timeout with the summary.
+An unavailable or invalid drill-down preserves an already collected summary.
+`--details` requires an explicit `disk` operation and cannot combine with container
+or project filtering. Disk accounting may be slow on daemons with large caches.
+
 ### Bazel
 
 Supply a local Bazel output/cache directory with `--path`. Daffy reports observed

@@ -63,3 +63,19 @@ with every Docker daemon/version or a real workload. Live Docker checks, if
 requested, must use an already authorized daemon; never start containers or
 change daemon configuration merely to verify the analyzer. See
 [plugin scope and limits](plugins.md).
+
+For an authorized Docker daemon, exercise the new options read-only:
+
+```sh
+./bin/daffy docker config --context default --json --timeout 5s
+./bin/daffy docker runtime --samples 2 --interval 100ms --json --timeout 5s
+./bin/daffy docker runtime --project daffy-validation-no-match --json --timeout 5s
+./bin/daffy docker disk --details --json --timeout 5s
+```
+
+Use a valid context name for the selected machine. An empty daemon establishes
+empty-selection and routing behavior, not real workload health or CPU accuracy.
+A slow disk query must produce an explicit incomplete report, not a healthy empty
+result. The verbose disk fixtures are source-derived/synthetic for CLI v29.1.3,
+not captured proof of every Docker version. SIGINT during repeated sampling must
+exit 130 and preserve the completed sample count. Keep local reports private.
