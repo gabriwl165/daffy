@@ -1,10 +1,15 @@
 package health
 
-import "testing"
+import (
+	"github.com/gabriwl165/daffy-duck/internal/distribution"
+	"github.com/gabriwl165/daffy-duck/internal/distribution/ubuntu"
+	"github.com/gabriwl165/daffy-duck/internal/distribution/zorin"
+	"testing"
+)
 
 func TestDistroDescriptors(t *testing.T) {
-	ubuntu := newUbuntuDescriptor()
-	zorin := newZorinDescriptor()
+	ubuntu := ubuntu.New()
+	zorin := zorin.New()
 	if ubuntu.Name() != "ubuntu" || zorin.Name() != "zorin" {
 		t.Fatalf("constructors: %q, %q", ubuntu.Name(), zorin.Name())
 	}
@@ -24,7 +29,7 @@ func TestDistroDescriptors(t *testing.T) {
 }
 
 func TestDistroDescriptorRegistryExtension(t *testing.T) {
-	distroRegistry["descriptor-test"] = distroDescriptor{name: "test"}
+	distroRegistry["descriptor-test"] = distribution.Profile{ID: "test"}
 	defer delete(distroRegistry, "descriptor-test")
 	if got := selectDistroAdapter("descriptor-test").Name(); got != "test" {
 		t.Fatalf("registered descriptor = %q", got)

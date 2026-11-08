@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/gabriwl165/daffy-duck/internal/distribution"
 )
 
 const integrationOutputLimit = 256 * 1024
@@ -193,7 +195,7 @@ func integrationJournal(ctx context.Context, o Options, boot journalBoot) []Find
 }
 
 func integrationServices(ctx context.Context, o Options) []Finding {
-	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolSystemctl, Args: []string{"--failed", "--no-legend", "--plain"}})
+	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: distribution.Systemctl, Args: []string{"--failed", "--no-legend", "--plain"}})
 	if r.err != nil {
 		return []Finding{integrationFinding(Finding{ID: findingFailedUnits, Area: AreaServices, Severity: SeverityUnknown, Summary: "Failed service state unavailable"})}
 	}
@@ -219,7 +221,7 @@ func integrationServices(ctx context.Context, o Options) []Finding {
 }
 
 func integrationBootTime(ctx context.Context, o Options) []Finding {
-	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolSystemdAnalyze, Args: []string{"time"}})
+	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: distribution.SystemdAnalyze, Args: []string{"time"}})
 	if r.err != nil {
 		return []Finding{integrationFinding(Finding{ID: findingBootTime, Area: AreaBoot, Severity: SeverityUnknown, Summary: "Boot timing unavailable"})}
 	}
@@ -270,7 +272,7 @@ func integrationGPU(ctx context.Context, o Options) []Finding {
 }
 
 func integrationPower(ctx context.Context, o Options) []Finding {
-	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolPowerprofilesctl, Args: []string{"get"}})
+	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: distribution.Powerprofilesctl, Args: []string{"get"}})
 	if r.err != nil {
 		return []Finding{integrationFinding(Finding{ID: findingPowerProfile, Area: AreaPower, Severity: SeverityUnknown, Summary: "Power profile unavailable"})}
 	}
@@ -310,11 +312,11 @@ func integrationDisks(ctx context.Context, o Options) []Finding {
 	if !o.Privileged || os.Geteuid() != 0 {
 		return append(res, integrationFinding(Finding{ID: findingDiskSMART, Area: AreaStorage, Severity: SeverityUnknown, Summary: "SMART unavailable: requires Privileged option and effective root"}))
 	}
-	if _, err := exec.LookPath(string(toolSmartctl)); err != nil {
+	if _, err := exec.LookPath(string(distribution.Smartctl)); err != nil {
 		return append(res, integrationFinding(Finding{ID: findingDiskSMART, Area: AreaStorage, Severity: SeverityUnknown, Summary: "SMART unavailable: smartctl not installed"}))
 	}
 	for _, d := range disks {
-		r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolSmartctl, Args: []string{"-H", "/dev/" + d}})
+		r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: distribution.Smartctl, Args: []string{"-H", "/dev/" + d}})
 		sev, summary, recognized := integrationSMARTStatus(string(r.stdout))
 		if recognized {
 			f := integrationFinding(Finding{ID: "smart-" + d, Area: AreaStorage, Severity: sev, Summary: summary})
@@ -369,7 +371,7 @@ func Doctor(ctx context.Context, o Options) []Check {
 		}
 		checks = append(checks, Check{Name: item.name, Available: err == nil, Detail: root})
 	}
-	for _, tool := range []distroTool{toolJournalctl, toolSystemctl, toolSystemdAnalyze, toolPowerprofilesctl, toolSensors, toolLspci, toolSmartctl} {
+	for _, tool := range []distribution.Tool{distribution.Journalctl, distribution.Systemctl, distribution.SystemdAnalyze, distribution.Powerprofilesctl, distribution.Sensors, distribution.Lspci, distribution.Smartctl} {
 		toolName := string(tool)
 		_, err := exec.LookPath(toolName)
 		detail := "unavailable"

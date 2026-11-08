@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"github.com/gabriwl165/daffy-duck/internal/distribution"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,7 @@ func TestOSReleaseParsingAndSelection(t *testing.T) {
 }
 
 func TestDistroRegistrySupportsAdapter(t *testing.T) {
-	distroRegistry["test-distro"] = distroDescriptor{name: "test"}
+	distroRegistry["test-distro"] = distribution.Profile{ID: "test"}
 	defer delete(distroRegistry, "test-distro")
 	if selectDistroAdapter("test-distro").Name() != "test" {
 		t.Fatal("registry extension not selected")

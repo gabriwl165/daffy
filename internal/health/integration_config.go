@@ -1,10 +1,13 @@
 package health
 
-import "time"
+import (
+	"github.com/gabriwl165/daffy-duck/internal/distribution"
+	"time"
+)
 
 type commandConfig struct {
 	Timeout time.Duration
-	Tool    distroTool
+	Tool    distribution.Tool
 	Args    []string
 }
 
@@ -20,7 +23,7 @@ func (b journalBoot) config(timeout time.Duration) (commandConfig, string) {
 	if b == journalPrevious {
 		flag, label = "--boot=-1", "previous"
 	}
-	return commandConfig{Timeout: timeout, Tool: toolJournalctl, Args: []string{"--no-pager", "--quiet", "--lines=1500", "-k", flag, "-o", "cat"}}, label
+	return commandConfig{Timeout: timeout, Tool: distribution.Journalctl, Args: []string{"--no-pager", "--quiet", "--lines=1500", "-k", flag, "-o", "cat"}}, label
 }
 
 func journalFindingID(b journalBoot) string {

@@ -148,7 +148,19 @@ Structure:
 cmd/daffy/          entry point and signal handling
 internal/cli/       commands and human/machine-readable presentation
 internal/health/    report model, Linux collectors, optional integrations
+internal/distribution/ typed distro profiles and tool identities
+  ubuntu/           Ubuntu-specific profile construction
+  zorin/            Zorin-specific profile construction
 ```
+
+Distribution packages contain OS policy, not performance profiling. Health
+composes their concrete profiles through an exact-ID registry, with generic
+Linux fallback. Zorin reuses Ubuntu-family package guidance without duplicating
+shared procfs/sysfs diagnostics. Add another profile package and register it at
+this composition boundary; no distro switch belongs in the shared collectors.
+
+See [the PSI performance review](docs/pressure-performance.md) for parser
+complexity, benchmark methodology, and limitations.
 
 JSON reports include a schema version, collection timestamp, duration, system
 identifiers, and findings. Findings carry a stable ID, area, severity, summary,

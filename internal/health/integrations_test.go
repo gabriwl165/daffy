@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"errors"
+	"github.com/gabriwl165/daffy-duck/internal/distribution"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 func TestIntegrationExecTimeout(t *testing.T) {
 	ctx := context.Background()
-	r := integrationExec(ctx, commandConfig{Timeout: 50 * time.Millisecond, Tool: distroTool("sh"), Args: []string{"-c", "sleep 5"}})
+	r := integrationExec(ctx, commandConfig{Timeout: 50 * time.Millisecond, Tool: distribution.Tool("sh"), Args: []string{"-c", "sleep 5"}})
 	if r.err == nil {
 		t.Fatal("expected timeout")
 	}
@@ -66,7 +67,7 @@ func TestIntegrationJournalPatternsAndPrivacy(t *testing.T) {
 	old := integrationRun
 	defer func() { integrationRun = old }()
 	integrationRun = func(_ context.Context, cfg commandConfig) integrationResult {
-		if cfg.Tool != toolJournalctl {
+		if cfg.Tool != distribution.Journalctl {
 			t.Fatalf("unexpected command %s", cfg.Tool)
 		}
 		return integrationResult{stdout: []byte("oom: oom_kill_disable enabled\nOut of memory: Killed process 42 (secret-user)\nNVRM: Xid GPU fault\nnouveau 0000:01:00.0: fifo: fault 01\nCPU0: Core temperature above threshold, cpu clock throttled\n")}

@@ -3,56 +3,19 @@ package health
 import (
 	"os"
 	"strings"
+
+	"github.com/gabriwl165/daffy-duck/internal/distribution"
+	"github.com/gabriwl165/daffy-duck/internal/distribution/ubuntu"
+	"github.com/gabriwl165/daffy-duck/internal/distribution/zorin"
 )
 
-type distroID string
-type distroTool string
-
-const (
-	distroUbuntu distroID = "ubuntu"
-	distroZorin  distroID = "zorin"
-	distroLinux  distroID = "linux"
-)
-
-const (
-	toolJournalctl       distroTool = "journalctl"
-	toolSystemctl        distroTool = "systemctl"
-	toolSystemdAnalyze   distroTool = "systemd-analyze"
-	toolPowerprofilesctl distroTool = "powerprofilesctl"
-	toolSensors          distroTool = "sensors"
-	toolLspci            distroTool = "lspci"
-	toolSmartctl         distroTool = "smartctl"
-)
-
-// distroDescriptor contains advisory package-manager guidance; collectors stay shared.
-type distroDescriptor struct {
-	name     string
-	packages map[distroTool]string
+var distroRegistry = map[string]distribution.Profile{
+	string(distribution.Ubuntu): ubuntu.New(),
+	string(distribution.Zorin):  zorin.New(),
 }
+var genericDistro = distribution.Profile{ID: distribution.Linux}
 
-func (d distroDescriptor) Name() string               { return d.name }
-func (d distroDescriptor) Package(tool string) string { return d.packages[distroTool(tool)] }
-
-var ubuntuPackages = map[distroTool]string{
-	toolJournalctl: "systemd", toolSystemctl: "systemd", toolSystemdAnalyze: "systemd",
-	toolPowerprofilesctl: "power-profiles-daemon", toolSensors: "lm-sensors",
-	toolLspci: "pciutils", toolSmartctl: "smartmontools",
-}
-
-func newUbuntuDescriptor() distroDescriptor {
-	return distroDescriptor{name: string(distroUbuntu), packages: ubuntuPackages}
-}
-func newZorinDescriptor() distroDescriptor {
-	return distroDescriptor{name: string(distroZorin), packages: ubuntuPackages}
-}
-
-var distroRegistry = map[string]distroDescriptor{
-	string(distroUbuntu): newUbuntuDescriptor(),
-	string(distroZorin):  newZorinDescriptor(),
-}
-var genericDistro = distroDescriptor{name: string(distroLinux)}
-
-func selectDistroAdapter(id string) distroDescriptor {
+func selectDistroAdapter(id string) distribution.Profile {
 	if a, ok := distroRegistry[id]; ok {
 		return a
 	}

@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"github.com/gabriwl165/daffy-duck/internal/distribution"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestJournalBootConfigurationPairing(t *testing.T) {
 		{journalPrevious, "--boot=-1", findingJournalPrevious},
 	} {
 		cfg, _ := tc.boot.config(0)
-		if cfg.Tool != toolJournalctl {
+		if cfg.Tool != distribution.Journalctl {
 			t.Fatalf("tool = %q", cfg.Tool)
 		}
 		if len(cfg.Args) < 6 || cfg.Args[4] != tc.flag || journalFindingID(tc.boot) != tc.id {
