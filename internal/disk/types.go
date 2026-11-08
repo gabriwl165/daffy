@@ -162,4 +162,5 @@ const (
 	Filesystem9P              Filesystem = "9p"
 	FilesystemAutofs          Filesystem = "autofs"
 	FilesystemFuse            Filesystem = "fuse"
+	FilesystemAPFS            Filesystem = "apfs"
 )

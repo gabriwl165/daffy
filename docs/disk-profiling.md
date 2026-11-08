@@ -54,6 +54,26 @@ reveal usernames or personal filenames; review them before sharing.
 
 ## Implementation boundaries
 
+### Initial macOS scope
+
+On Apple Silicon, select an explicit directory on APFS, for example
+`daffy disk "$HOME"`. Whole-system scans are unsupported until APFS System/Data
+volume alias accounting is validated. Root components must not be symlinks:
+macOS paths such as `/tmp` or `/var` may need their physical `/private/...` path.
+Do not select a system-volume root to work around the whole-system restriction.
+
+Traversal opens each directory relative to its parent descriptor with no-follow
+flags. Symlinks and special files are inspected as metadata, not followed or
+opened for contents. Discovered mounts remain traversal boundaries, including
+unsupported filesystem types. Mount changes during a scan are not a snapshot.
+
+APFS capacity belongs to a volume; volumes may share a container's free space.
+Do not sum volume capacities as independent disks. Clones, shared extents, and
+snapshots also mean observed allocated blocks are not unique physical or
+reclaimable bytes. Linux cleanup guidance is not applicable on macOS.
+
+### Shared contracts
+
 Portable typed configuration, reports, and a scanner interface are separated
 from platform-specific mount discovery, metadata, and capacity accounting.
 Additional operating systems can implement the platform boundary without
