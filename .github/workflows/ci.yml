@@ -21,3 +21,42 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./...
+  container-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - base: "22.04"
+            target: ubuntu
+            fixture: ubuntu
+            id: ubuntu
+            adapter: ubuntu
+          - base: "24.04"
+            target: ubuntu
+            fixture: ubuntu
+            id: ubuntu
+            adapter: ubuntu
+          - base: "22.04"
+            target: zorin-fixture
+            fixture: "17"
+            id: zorin
+            adapter: zorin
+          - base: "24.04"
+            target: zorin-fixture
+            fixture: "18"
+            id: zorin
+            adapter: zorin
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build smoke image
+        run: >-
+          docker build --build-arg UBUNTU_VERSION=${{ matrix.base }}
+          --build-arg ZORIN_VERSION=${{ matrix.fixture }}
+          --target ${{ matrix.target }} -t daffy-smoke .
+      - name: Run smoke checks
+        run: >-
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m
+          -e EXPECTED_DISTRO_ID=${{ matrix.id }}
+          -e EXPECTED_DISTRO_ADAPTER=${{ matrix.adapter }}
+          --entrypoint /bin/sh daffy-smoke /usr/local/bin/container-smoke

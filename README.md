@@ -105,6 +105,36 @@ executors to test errors and permissions without root or real hardware faults.
 CLI tests exercise routing, output, validation, and cancellation. Live scans
 are smoke tests only: they do not reproduce freezes or validate every device.
 
+### Container smoke tests
+
+```sh
+docker build --target ubuntu -t daffy-ubuntu .
+docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  -e EXPECTED_DISTRO_ID=ubuntu -e EXPECTED_DISTRO_ADAPTER=ubuntu \
+  --entrypoint /bin/sh daffy-ubuntu /usr/local/bin/container-smoke
+
+docker build --target zorin-fixture -t daffy-zorin-fixture .
+docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  -e EXPECTED_DISTRO_ID=zorin -e EXPECTED_DISTRO_ADAPTER=zorin \
+  --entrypoint /bin/sh daffy-zorin-fixture /usr/local/bin/container-smoke
+```
+
+CI covers Ubuntu 22.04 and 24.04 plus Zorin 17/18 **identity fixtures** on their
+corresponding Ubuntu bases. Defaults are Ubuntu 24.04 and the Zorin 18 fixture;
+use `--build-arg UBUNTU_VERSION=22.04 --build-arg ZORIN_VERSION=17` for the
+older fixture. See [Zorin's base versions](https://zorin.com/os/details/).
+
+The Zorin target is not a real Zorin installation: it substitutes test
+`os-release` metadata in Ubuntu userspace to verify adapter selection. Images
+run as a non-root user without privileged host mounts. Python is included only
+to assert smoke-test JSON, not as an application dependency.
+
+Containers share the host kernel and may lack systemd, readable journals,
+sensors, devices, and a desktop session. Unknown findings are expected; these
+checks validate execution and report contracts, not machine health. Validate
+real Zorin services and desktop behavior in a VM or installation, and hardware
+diagnostics on the target hardware before claiming those are verified.
+
 Structure:
 
 ```text
