@@ -189,7 +189,7 @@ func TestCommandRunnerInheritsParentDeadline(t *testing.T) {
 	defer cancel()
 	// The child completes well within the parent budget. A hidden default command
 	// timeout is distinguishable through runnerTimeout's selection test above.
-	if _, err := (&CommandRunner{Binary: "/bin/true"}).Run(parent); err != nil {
+	if _, err := (&CommandRunner{Binary: "/usr/bin/true"}).Run(parent); err != nil {
 		t.Fatalf("inherited parent deadline: %v", err)
 	}
 }
