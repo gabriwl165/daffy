@@ -1,4 +1,4 @@
-# Daffy Duck
+# Daffy
 
 A read-only Linux health CLI, written in Go. Investigate overheating, freezes,
 resource contention, and slow boots without applying speculative “optimizations.”
@@ -14,7 +14,7 @@ Download the installer, inspect it, then run it:
 
 ```sh
 curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
-  https://raw.githubusercontent.com/gabriwl165/daffy-duck/main/setup.sh \
+  https://raw.githubusercontent.com/gabriwl165/daffy/main/setup.sh \
   --output setup.sh
 less setup.sh
 sh setup.sh
@@ -39,7 +39,7 @@ INSTALL_DIR="$HOME/bin" sh setup.sh
 ```
 
 Re-run the installer to update. To install a specific retained build, copy its
-`build-<full-commit-SHA>` tag from [Releases](https://github.com/gabriwl165/daffy-duck/releases):
+`build-<full-commit-SHA>` tag from [Releases](https://github.com/gabriwl165/daffy/releases):
 
 ```sh
 sh setup.sh --version 'build-<full-commit-SHA>'

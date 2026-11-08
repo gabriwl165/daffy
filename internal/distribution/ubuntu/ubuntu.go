@@ -1,6 +1,6 @@
 package ubuntu
 
-import "github.com/gabriwl165/daffy-duck/internal/distribution"
+import "github.com/gabriwl165/daffy/internal/distribution"
 
 func New() distribution.Profile {
 	return distribution.Profile{ID: distribution.Ubuntu, Packages: map[distribution.Tool]distribution.Package{

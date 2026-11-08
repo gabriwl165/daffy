@@ -1,7 +1,7 @@
 package health
 
 import (
-	"github.com/gabriwl165/daffy-duck/internal/distribution"
+	"github.com/gabriwl165/daffy/internal/distribution"
 	"time"
 )
 

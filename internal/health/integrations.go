@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gabriwl165/daffy-duck/internal/distribution"
+	"github.com/gabriwl165/daffy/internal/distribution"
 )
 
 const integrationOutputLimit = 256 * 1024

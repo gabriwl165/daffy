@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gabriwl165/daffy-duck/internal/health"
+	"github.com/gabriwl165/daffy/internal/health"
 )
 
 func fixtures() (Deps, *health.Options, *int) {

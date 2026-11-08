@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/gabriwl165/daffy-duck/internal/health"
+	"github.com/gabriwl165/daffy/internal/health"
 )
 
 var version = "dev"

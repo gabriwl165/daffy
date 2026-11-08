@@ -2,7 +2,7 @@ package health
 
 import (
 	"context"
-	"github.com/gabriwl165/daffy-duck/internal/distribution"
+	"github.com/gabriwl165/daffy/internal/distribution"
 	"strings"
 	"testing"
 )

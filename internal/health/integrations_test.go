@@ -3,7 +3,7 @@ package health
 import (
 	"context"
 	"errors"
-	"github.com/gabriwl165/daffy-duck/internal/distribution"
+	"github.com/gabriwl165/daffy/internal/distribution"
 	"os"
 	"path/filepath"
 	"strings"

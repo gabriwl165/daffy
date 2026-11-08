@@ -1,9 +1,9 @@
 package health
 
 import (
-	"github.com/gabriwl165/daffy-duck/internal/distribution"
-	"github.com/gabriwl165/daffy-duck/internal/distribution/ubuntu"
-	"github.com/gabriwl165/daffy-duck/internal/distribution/zorin"
+	"github.com/gabriwl165/daffy/internal/distribution"
+	"github.com/gabriwl165/daffy/internal/distribution/ubuntu"
+	"github.com/gabriwl165/daffy/internal/distribution/zorin"
 	"testing"
 )
 

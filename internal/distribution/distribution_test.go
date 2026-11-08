@@ -3,9 +3,9 @@ package distribution_test
 import (
 	"testing"
 
-	"github.com/gabriwl165/daffy-duck/internal/distribution"
-	"github.com/gabriwl165/daffy-duck/internal/distribution/ubuntu"
-	"github.com/gabriwl165/daffy-duck/internal/distribution/zorin"
+	"github.com/gabriwl165/daffy/internal/distribution"
+	"github.com/gabriwl165/daffy/internal/distribution/ubuntu"
+	"github.com/gabriwl165/daffy/internal/distribution/zorin"
 )
 
 func TestDistroProfiles(t *testing.T) {

@@ -11,9 +11,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$version" in
-  latest) base=https://github.com/gabriwl165/daffy-duck/releases/latest/download ;;
+  latest) base=https://github.com/gabriwl165/daffy/releases/latest/download ;;
   build-*) tag=${version#build-}; case "$tag" in ''|*[!0-9a-fA-F]*) fail "invalid build tag";; esac
-    [ "${#tag}" -eq 40 ] || fail "invalid build tag"; base="https://github.com/gabriwl165/daffy-duck/releases/download/$version" ;;
+    [ "${#tag}" -eq 40 ] || fail "invalid build tag"; base="https://github.com/gabriwl165/daffy/releases/download/$version" ;;
   *) fail "version must be latest or build-<full-commit-sha>" ;;
 esac
 [ "$(uname -s)" = Linux ] || fail "Linux is required"

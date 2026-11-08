@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/gabriwl165/daffy-duck/internal/cli"
+	"github.com/gabriwl165/daffy/internal/cli"
 )
 
 var version = "dev"
