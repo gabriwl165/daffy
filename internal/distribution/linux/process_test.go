@@ -4,6 +4,7 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"github.com/gabriwl165/daffy/internal/distribution/process"
 	"os"
 	"os/exec"
@@ -59,6 +60,55 @@ func TestFinderProcFixturesIPv4IPv6AndMultipleOwners(t *testing.T) {
 		t.Fatalf("owners=%v err=%v", owners, err)
 	}
 }
+
+func TestFinderIncludesPID1ForListenerOwnership(t *testing.T) {
+	for _, pids := range [][]string{{"1"}, {"1", "123"}} {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "net"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		header := "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+		row := "0: 00000000:1F90 00000000:0000 0A 0 0 00:00000000 0 0 9001\n"
+		if err := os.WriteFile(filepath.Join(root, "net/tcp"), []byte(header+row), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "net/tcp6"), []byte(strings.Replace(header, "rem_address", "remote_address", 1)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, pid := range pids {
+			fd := filepath.Join(root, pid, "fd")
+			if err := os.MkdirAll(fd, 0700); err != nil {
+				t.Fatal(err)
+			}
+			stat := pid + " (proc) S" + strings.Repeat(" x", 18) + " 77\n"
+			if err := os.WriteFile(filepath.Join(root, pid, "stat"), []byte(stat), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("socket:[9001]", filepath.Join(fd, "3")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		finder := NewProcessFinder(root)
+		owners, err := finder.Find(context.Background(), process.ProcessTarget{Kind: process.TargetTCPPort, Port: 8080})
+		if err != nil || len(owners) != len(pids) || owners[0].PID != 1 {
+			t.Fatalf("owners=%v err=%v", owners, err)
+		}
+		s := &countingSignaller{}
+		_, err = process.NewController(finder, s).Terminate(context.Background(), process.ProcessTarget{Kind: process.TargetTCPPort, Port: 8080})
+		want := process.ProcessInvalidTarget
+		if len(pids) == 2 {
+			want = process.ProcessAmbiguous
+		}
+		var pe *process.ProcessError
+		if !errors.As(err, &pe) || pe.Kind != want || s.calls != 0 {
+			t.Fatalf("err=%v signals=%d", err, s.calls)
+		}
+	}
+}
+
+type countingSignaller struct{ calls int }
+
+func (s *countingSignaller) Signal(int, os.Signal) error { s.calls++; return nil }
 
 func TestOwnedChildHelper(t *testing.T) {
 	if os.Getenv("DAFFY_PROCESS_HELPER") == "1" {

@@ -123,7 +123,7 @@ func (f darwinFinder) owners(ctx context.Context, pids []int) ([]process.Process
 		}
 		identity := strings.TrimSpace(string(r.Stdout))
 		if identity == "" {
-			continue
+			return nil, &process.ProcessError{Kind: process.ProcessDiscoveryFailed, Err: fmt.Errorf("ps identity lookup returned empty result for PID %d", pid)}
 		}
 		owners = append(owners, process.ProcessOwner{PID: pid, Identity: identity})
 	}

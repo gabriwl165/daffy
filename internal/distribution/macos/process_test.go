@@ -15,6 +15,22 @@ type fakeProcessRunner struct {
 	calls   int
 }
 
+func TestProcessFinderRejectsEmptyIdentity(t *testing.T) {
+	for _, target := range []process.ProcessTarget{{Kind: process.TargetPID, PID: 51}, {Kind: process.TargetTCPPort, Port: 80}} {
+		results := []ProcessCommandResult{}
+		if target.Kind == process.TargetTCPPort {
+			results = append(results, ProcessCommandResult{Stdout: []byte("51\n52\n")}, ProcessCommandResult{Stdout: []byte("identity\n")})
+		}
+		results = append(results, ProcessCommandResult{})
+		f := &fakeProcessRunner{results: results}
+		_, err := (darwinFinder{f}).Find(context.Background(), target)
+		var pe *process.ProcessError
+		if !errors.As(err, &pe) || pe.Kind != process.ProcessDiscoveryFailed {
+			t.Fatalf("target=%+v err=%v", target, err)
+		}
+	}
+}
+
 func TestProcessFinderMissingToolAndFailedIdentityLookup(t *testing.T) {
 	f := &fakeProcessRunner{results: []ProcessCommandResult{{Err: fmt.Errorf("executable missing")}}}
 	_, err := (darwinFinder{f}).Find(context.Background(), process.ProcessTarget{Kind: process.TargetTCPPort, Port: 80})

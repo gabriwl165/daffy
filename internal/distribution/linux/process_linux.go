@@ -70,7 +70,7 @@ func (f linuxFinder) Find(ctx context.Context, t process.ProcessTarget) ([]proce
 			continue
 		}
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 {
+		if err != nil || pid <= 0 {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
