@@ -130,10 +130,12 @@ and safety limits.
 
 ## Coverage
 
-The table below describes Linux coverage. The initial macOS provider reports
-kernel/CPU identity, physical memory capacity, and root filesystem capacity when
-available. CPU utilization, processes, swap, pressure, thermals, and disk activity
-remain explicitly unknown; capacity alone does not establish system health.
+The table below describes Linux coverage. The macOS provider reports
+kernel/CPU identity, sampled system CPU utilization, physical memory capacity,
+and root filesystem capacity when available. CPU sampling uses two `top` samples
+and rounds the requested interval up to whole seconds; failed samples stay unknown.
+Processes, swap, pressure, thermals, and disk activity remain explicitly unknown;
+capacity alone does not establish system health.
 Linux-only integrations and package recommendations are not run on macOS.
 Windows cross-compiles but has no supported native health or disk provider.
 
