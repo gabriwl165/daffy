@@ -119,6 +119,26 @@ func TestRuntimeSamplesRankPeaksAndKeepChurn(t *testing.T) {
 	}
 }
 
+func TestInvalidRuntimeSampleDoesNotContaminatePeaks(t *testing.T) {
+	a := strings.Repeat("a", 64)
+	b := strings.Repeat("b", 64)
+	row := func(id, cpu, memory string) string {
+		return `{"ID":"` + id + `","Name":"container","CPUPerc":"` + cpu + `","MemUsage":"1/2","MemPerc":"` + memory + `","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`
+	}
+	r := &fakeRunner{outputs: [][]byte{
+		[]byte(row(a, "10%", "20%")),
+		[]byte(row(a, "99%", "30%") + "\n" + row(b, "5%", "NaN%")),
+	}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 2, Interval: 100 * time.Millisecond}})
+	if err == nil || o.Details.Docker.RuntimeTrend == nil || o.Details.Docker.RuntimeTrend.SampleCount != 1 {
+		t.Fatalf("expected one completed sample: %#v %v", o, err)
+	}
+	trend := o.Details.Docker.RuntimeTrend.Containers
+	if len(trend) != 1 || trend[0].ID != a || trend[0].PeakCPUPercent != 10 {
+		t.Fatalf("invalid sample contaminated peak data: %#v", trend)
+	}
+}
+
 func TestRuntimeSamplingPreservesContextAndContainerTarget(t *testing.T) {
 	id := strings.Repeat("a", 64)
 	listed := []byte(`{"ID":"` + id + `","Names":"api"}`)
