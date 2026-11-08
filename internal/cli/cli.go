@@ -13,7 +13,11 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gabriwl165/daffy/internal/disk"
 	"github.com/gabriwl165/daffy/internal/health"
+	"github.com/gabriwl165/daffy/internal/plugins"
+	"github.com/gabriwl165/daffy/internal/plugins/bazel"
+	"github.com/gabriwl165/daffy/internal/plugins/docker"
 )
 
 var version = "dev"
@@ -24,8 +28,9 @@ Usage: daffy [scan] [options]
        daffy report --json [options]
        daffy watch [options]
        daffy doctor [options]
+       daffy plugins list|run ...
 
-Commands: scan (default), watch, report, doctor
+Commands: scan (default), watch, report, doctor, plugins
 Options: --sample duration --timeout duration --include-sensitive --privileged
          --json (scan/report; watch emits NDJSON) --interval duration (watch)
 Exit codes: 0 completed (findings do not fail), 1 execution failure, 2 usage error.
@@ -35,6 +40,7 @@ No files are written. Sensitive log collection and root checks require explicit 
 type Deps struct {
 	Collect func(context.Context, health.Options) health.Report
 	Doctor  func(context.Context, health.Options) []health.Check
+	Plugins *plugins.Registry
 }
 
 type RunConfig struct {
@@ -62,7 +68,14 @@ const (
 	exitInterrupted exitCode = 130
 )
 
-func DefaultDeps() Deps { return Deps{health.Collect, health.Doctor} }
+func DefaultDeps() Deps {
+	r, err := plugins.NewRegistry(docker.New(docker.NewCommandRunner()), bazel.New(disk.NewScanner()))
+	if err != nil {
+		// Built-in descriptors are programming-time constants, not user input.
+		panic("invalid built-in plugin registry: " + err.Error())
+	}
+	return Deps{Collect: health.Collect, Doctor: health.Doctor, Plugins: r}
+}
 
 type config struct {
 	sample, timeout, interval   time.Duration
@@ -93,6 +106,9 @@ func Run(ctx context.Context, rc RunConfig) int {
 	if len(args) > 0 && args[0] == "--version" {
 		fmt.Fprintln(out, "daffy", buildVersion)
 		return int(exitSuccess)
+	}
+	if len(args) > 0 && args[0] == pluginCommand {
+		return runPlugins(ctx, args[1:], out, errOut, deps.Plugins)
 	}
 	cmd := commandScan
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
