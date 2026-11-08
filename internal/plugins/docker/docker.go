@@ -176,7 +176,7 @@ func New(r Runner) *Plugin {
 }
 func (p *Plugin) Describe() plugins.Descriptor {
 	return plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{
-		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true}},
+		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, DiskDetails: true}},
 		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, RuntimeTrends: true}},
 		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true}},
 	}}
@@ -192,7 +192,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusCancelled}, err
 	}
 	trendOptions := req.Options.Samples != 0 || req.Options.Interval != 0 || req.Options.RuntimeTop != 0 || req.Options.CPUThreshold != 0 || req.Options.MemoryThreshold != 0
-	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions {
+	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions || req.Options.DiskDetails && req.Operation != plugins.OperationDisk {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	if validateTargetOptions(req.Options) != nil {
@@ -219,6 +219,9 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	switch req.Operation {
 	case plugins.OperationDisk:
 		err = p.disk(ctx, d, &o)
+		if err == nil && req.Options.DiskDetails {
+			err = p.diskDetails(ctx, d, &o)
+		}
 	case plugins.OperationRuntime:
 		err = p.runtimeSamples(ctx, req.Options, d, &o)
 	case plugins.OperationConfig:

@@ -33,17 +33,18 @@ const (
 	pluginFlagRuntimeTop      = "runtime-top"
 	pluginFlagCPUThreshold    = "cpu-threshold"
 	pluginFlagMemoryThreshold = "memory-threshold"
+	pluginFlagDetails         = "details"
 	pluginDefaultTimeout      = 15 * time.Second
 	pluginDefaultTop          = 20
 	pluginMaximumTop          = 10000
 )
 
 const pluginUsage = `Usage: daffy plugins list [--json]
-       daffy plugins run docker [disk|runtime|config] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
+       daffy plugins run docker [disk|runtime|config] [--details] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
        daffy plugins run bazel [disk] --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
 
-const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
+const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--details] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
 `
 const bazelAliasUsage = `Usage: daffy bazel disk --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
@@ -136,6 +137,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 	runtimeTop := fs.Int(pluginFlagRuntimeTop, 0, "number of ranked runtime containers")
 	cpuThreshold := fs.Float64(pluginFlagCPUThreshold, 0, "CPU peak percentage threshold")
 	memoryThreshold := fs.Float64(pluginFlagMemoryThreshold, 0, "memory peak percentage threshold")
+	details := fs.Bool(pluginFlagDetails, false, "include typed Docker disk object breakdown")
 	var excludes stringsFlag
 	fs.Var(&excludes, pluginFlagExclude, "exclude path (repeatable)")
 	var containers stringsFlag
@@ -159,7 +161,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		fmt.Fprintf(errOut, "unexpected arguments: %s\n", safe(strings.Join(fs.Args(), " ")))
 		return int(exitUsage)
 	}
-	var specified struct{ Path, Top, Exclude, Context, Container, Project, Samples, Interval, RuntimeTop, CPU, Memory bool }
+	var specified struct{ Path, Top, Exclude, Context, Container, Project, Samples, Interval, RuntimeTop, CPU, Memory, Details bool }
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case pluginFlagPath:
@@ -184,6 +186,8 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 			specified.CPU = true
 		case pluginFlagMemoryThreshold:
 			specified.Memory = true
+		case pluginFlagDetails:
+			specified.Details = true
 		}
 	})
 	if *timeout <= 0 {
@@ -222,7 +226,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 	}
 	for _, op := range selected {
 		trendSpecified := specified.Samples || specified.Interval || specified.RuntimeTop || specified.CPU || specified.Memory
-		if specified.Path && !op.Options.Path || specified.Exclude && !op.Options.Excludes || specified.Top && !op.Options.TopN || specified.Context && (id != plugins.PluginDocker || !op.Options.Context) || specified.Container && (id != plugins.PluginDocker || !op.Options.Containers || op.ID == plugins.OperationDisk) || specified.Project && (id != plugins.PluginDocker || !op.Options.Project || op.ID == plugins.OperationDisk) || trendSpecified && !op.Options.RuntimeTrends || op.Options.RequirePath && *path == "" {
+		if specified.Path && !op.Options.Path || specified.Exclude && !op.Options.Excludes || specified.Top && !op.Options.TopN || specified.Context && (id != plugins.PluginDocker || !op.Options.Context) || specified.Container && (id != plugins.PluginDocker || !op.Options.Containers || op.ID == plugins.OperationDisk) || specified.Project && (id != plugins.PluginDocker || !op.Options.Project || op.ID == plugins.OperationDisk) || trendSpecified && !op.Options.RuntimeTrends || specified.Details && !op.Options.DiskDetails || op.Options.RequirePath && *path == "" {
 			fmt.Fprintf(errOut, "invalid or unsupported options for %q\n", safe(string(op.ID)))
 			return int(exitUsage)
 		}
@@ -252,7 +256,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 			return *interval
 		}
 		return 0
-	}(), RuntimeTop: *runtimeTop, CPUThreshold: *cpuThreshold, MemoryThreshold: *memoryThreshold}}, *timeout)
+	}(), RuntimeTop: *runtimeTop, CPUThreshold: *cpuThreshold, MemoryThreshold: *memoryThreshold, DiskDetails: *details}}, *timeout)
 	if err != nil && (errors.Is(err, plugins.ErrInvalid) || errors.Is(err, plugins.ErrUnknownPlugin) || errors.Is(err, plugins.ErrUnknownOperation)) {
 		if _, werr := fmt.Fprintf(errOut, "%s\n", safe(err.Error())); werr != nil {
 			return int(exitFailure)
@@ -321,6 +325,21 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 			for _, v := range d.DiskUsage {
 				if _, e := fmt.Fprintf(w, "  %s: %d total, %d active, %s (reclaimable %s)\n", safe(v.Category), v.TotalCount, v.Active, safe(v.Size), safe(v.Reclaimable)); e != nil {
 					return e
+				}
+			}
+			for _, group := range d.DiskBreakdown {
+				if _, e := fmt.Fprintf(w, "  %s details:\n", safe(group.Category)); e != nil {
+					return e
+				}
+				for _, v := range group.Items {
+					if _, e := fmt.Fprintf(w, "    id=%s name=%s image=%s repository=%s tag=%s cache_type=%s size=%s shared=%s unique=%s status=%s links=%s local_volumes=%s usage_count=%s in_use=%s shared_cache=%s containers=%s\n", safe(v.ID), safe(v.Name+v.Names), safe(v.Image), safe(v.Repository), safe(v.Tag), safe(v.CacheType), safe(v.Size), safe(v.SharedSize), safe(v.UniqueSize), safe(v.Status), safe(v.Links), safe(v.LocalVolumes), safe(v.UsageCount), safe(v.InUse), safe(v.Shared), safe(v.Containers)); e != nil {
+						return e
+					}
+				}
+				if group.Category == "images" || group.Category == "volumes" || group.Category == "build cache" {
+					if _, e := fmt.Fprintln(w, "    Informational size only; shared data or in-use state is not a deletion-safety guarantee."); e != nil {
+						return e
+					}
 				}
 			}
 			for _, v := range d.Runtime {
