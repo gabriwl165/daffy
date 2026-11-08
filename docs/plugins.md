@@ -85,6 +85,24 @@ remain visible in unfiltered configuration reports. Project and container
 selectors intersect when combined; project selection also requires an explicit
 `config` or `runtime` operation. Names and allowlisted label values may be sensitive.
 
+Runtime trends are opt-in and bounded:
+
+```sh
+daffy docker runtime --samples 5 --interval 500ms --runtime-top 10 \
+  --cpu-threshold 150 --memory-threshold 80 --timeout 30s
+```
+
+Choose 1–60 samples, an interval of 100ms–1m (default 500ms), and at most
+100 ranked containers (`--runtime-top 0` keeps all). Ranking uses peak CPU,
+then peak memory percentage, then container ID. Thresholds compare with observed
+peaks using `>=`; zero disables that threshold. CPU percentages may exceed 100%
+on multicore systems; memory thresholds range from 0–100%. Missing containers
+are not zero-valued samples. The original runtime table is the latest snapshot;
+the separate trend section retains peak observations across container churn.
+Timeout/cancellation preserves collected peaks and the completed sample count.
+Runtime-only flags require an explicit `runtime` operation and work with context,
+container, and project selection. Without them, collection stays a single snapshot.
+
 ### Bazel
 
 Supply a local Bazel output/cache directory with `--path`. Daffy reports observed
