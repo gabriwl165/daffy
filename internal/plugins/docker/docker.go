@@ -334,7 +334,8 @@ type diskRow struct {
 }
 
 func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
-	if len(targetSelectors(ctx)) == 0 {
+	selectors, project := targetSelectors(ctx), targetProject(ctx)
+	if len(selectors) == 0 && project == "" {
 		b, e := p.call(ctx, "docker stats", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}")
 		if e != nil {
 			failCommand(o, issueRuntimeUnavailable, e)
@@ -347,15 +348,20 @@ func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugi
 		}
 		return appendRuntimeRows(d, o, rows)
 	}
-	ids, e := p.selectContainers(ctx, targetSelectors(ctx))
+	ids, e := p.selectContainers(ctx, selectors)
 	if e != nil {
 		failCommand(o, issueListUnavailable, e)
 		return e
 	}
-	if targetProject(ctx) != "" {
+	if project != "" {
 		tmp := &plugins.DockerDetails{}
 		oo := &plugins.Outcome{Status: plugins.StatusComplete}
 		if err := p.config(ctx, tmp, oo); err != nil {
+			o.Issues = append(o.Issues, oo.Issues...)
+			o.Findings = append(o.Findings, oo.Findings...)
+			if oo.Status != plugins.StatusComplete {
+				o.Status = oo.Status
+			}
 			return err
 		}
 		ids = ids[:0]
@@ -499,12 +505,6 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				fail(o, issueHostConfigUnknown)
 			}
 			d.Config = append(d.Config, cfg)
-			if cfg.Project != "" {
-				group := composeGroup(d, cfg.Project)
-				group.Total++
-				if cfg.Health == stateUnhealthy { group.Unhealthy++ }
-				if cfg.Status == stateRestarting { group.Restarting++ }
-			}
 			if cfg.Project != "" {
 				group := composeGroup(d, cfg.Project)
 				group.Total++
