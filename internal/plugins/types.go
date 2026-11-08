@@ -65,6 +65,7 @@ type SupportedOptions struct {
 	RequirePath bool `json:"require_path,omitempty"`
 	Context     bool `json:"context,omitempty"`
 	Containers  bool `json:"containers,omitempty"`
+	Project     bool `json:"project,omitempty"`
 }
 type Operation struct {
 	ID      OperationID      `json:"id"`
@@ -126,12 +127,21 @@ type DockerContainerConfig struct {
 	RestartCount   int64  `json:"restart_count"`
 	OOMKilled      *bool  `json:"oom_killed,omitempty"`
 	ExitCode       *int64 `json:"exit_code,omitempty"`
+	Project        string `json:"project,omitempty"`
+	Service        string `json:"service,omitempty"`
+}
+type DockerComposeGroup struct {
+	Project    string `json:"project"`
+	Total      int    `json:"total"`
+	Unhealthy  int    `json:"unhealthy"`
+	Restarting int    `json:"restarting"`
 }
 type DockerDetails struct {
-	DiskUsage []DockerDiskUsage       `json:"disk_usage,omitempty"`
-	Runtime   []DockerContainerStats  `json:"runtime,omitempty"`
-	Config    []DockerContainerConfig `json:"config,omitempty"`
-	Context   string                  `json:"context,omitempty"`
+	DiskUsage     []DockerDiskUsage       `json:"disk_usage,omitempty"`
+	Runtime       []DockerContainerStats  `json:"runtime,omitempty"`
+	Config        []DockerContainerConfig `json:"config,omitempty"`
+	Context       string                  `json:"context,omitempty"`
+	ComposeGroups []DockerComposeGroup    `json:"compose_groups,omitempty"`
 }
 type BazelDetails struct {
 	Disk *disk.Report `json:"disk,omitempty"`
@@ -282,7 +292,7 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 	}
 	for _, op := range selected {
 		opts := req.Options
-		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || (op.Options.RequirePath && opts.Path == "") {
+		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)
 		}
 	}
