@@ -2,7 +2,6 @@ package health
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,54 +39,22 @@ func coreMemory(proc string, add coreAdd) {
 	}
 }
 func corePressure(proc string, add coreAdd) {
-	for _, pressure := range []struct {
-		name string
-		id   string
-	}{{"cpu", coreFindingPressureCPU}, {"memory", coreFindingPressureMemory}, {"io", coreFindingPressureIO}} {
-		name := pressure.name
-		b, e := os.ReadFile(filepath.Join(proc, "pressure", name))
+	for _, pressure := range pressureResources {
+		name := pressure.name()
+		b, e := os.ReadFile(filepath.Join(proc, pressureDirectory, name))
 		if e != nil {
-			add(Finding{ID: pressure.id, Area: AreaPressure, Severity: SeverityUnknown, Summary: name + " pressure unavailable"})
+			add(Finding{ID: pressure.findingID, Area: AreaPressure, Severity: SeverityUnknown, Summary: name + " pressure unavailable"})
 			continue
 		}
-		values := []string{}
-		high := false
-		valid := true
-		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-			f := strings.Fields(line)
-			if len(f) < 4 || (f[0] != "some" && f[0] != "full") {
-				valid = false
-				break
-			}
-			found := false
-			for _, x := range f[1:] {
-				k, v, ok := strings.Cut(x, "=")
-				if !ok {
-					continue
-				}
-				if k == "avg10" {
-					n, err := strconv.ParseFloat(v, 64)
-					if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > 100 {
-						valid = false
-					} else if n >= 20 {
-						high = true
-					}
-					found = true
-				}
-			}
-			if !found {
-				valid = false
-			}
-			values = append(values, strings.Join(f, " "))
-		}
-		if !valid || len(values) == 0 {
-			add(Finding{ID: pressure.id, Area: AreaPressure, Severity: SeverityUnknown, Summary: name + " pressure data malformed"})
+		result := parsePressure(string(b))
+		if !result.valid {
+			add(Finding{ID: pressure.findingID, Area: AreaPressure, Severity: SeverityUnknown, Summary: name + " pressure data malformed"})
 		} else {
 			sev := SeverityOK
-			if high {
+			if result.high {
 				sev = SeverityWarning
 			}
-			add(Finding{ID: pressure.id, Area: AreaPressure, Severity: sev, Summary: name + " pressure averages available", Evidence: values})
+			add(Finding{ID: pressure.findingID, Area: AreaPressure, Severity: sev, Summary: name + " pressure averages available", Evidence: result.evidence})
 		}
 	}
 }
