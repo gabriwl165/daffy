@@ -41,13 +41,45 @@ func TestDarwinCPUFindingUniqueAndJSON(t *testing.T) {
 	}
 }
 
+func TestDarwinMemoryFindingsIndependentAndUnique(t *testing.T) {
+	m := &macos.MemoryUsage{ImmediatelyFreeBytes: 8192, SpeculativeBytes: 4096, SpeculativePagesPresent: true, SwapTotalBytes: 1 << 30, SwapUsedBytes: 1 << 29, SwapFreeBytes: 1 << 29}
+	r := darwinReport("", "", "arm64", integrationResult{}, darwinSamples{Memory: m})
+	counts := map[string]int{}
+	for _, f := range r.Findings {
+		counts[f.ID]++
+		if f.ID == string(darwinFindingMemoryFree) && f.Severity != SeverityInfo {
+			t.Fatalf("free: %+v", f)
+		}
+		if f.ID == string(darwinFindingMemorySwap) && f.Severity != SeverityInfo {
+			t.Fatalf("swap: %+v", f)
+		}
+	}
+	for _, id := range []darwinFindingID{darwinFindingMemoryFree, darwinFindingMemorySpeculative, darwinFindingMemorySwap} {
+		if counts[string(id)] != 1 {
+			t.Fatalf("%s count %d", id, counts[string(id)])
+		}
+	}
+	b, err := json.Marshal(r)
+	if err != nil || !strings.Contains(string(b), "immediately_free_bytes=8192") {
+		t.Fatalf("json %s %v", b, err)
+	}
+	r = darwinReport("", "", "arm64", integrationResult{}, darwinSamples{Memory: m, MemoryErr: errors.New("ram fail")})
+	for _, f := range r.Findings {
+		if f.ID == string(darwinFindingMemorySwap) && f.Severity != SeverityInfo {
+			t.Fatal("RAM failure discarded valid swap")
+		}
+	}
+}
+
 func TestDarwinReportCapacityAndUnknowns(t *testing.T) {
 	valid := darwinReport("24.1", "Apple CPU", "arm64", integrationResult{stdout: []byte("17179869184\n")}, darwinSamples{})
 	if valid.System.Kernel != "24.1" || valid.System.CPUModel != "Apple CPU" || valid.Findings[0].Severity != SeverityInfo {
 		t.Fatalf("unexpected valid report: %+v", valid)
 	}
-	if valid.Findings[1].ID != string(darwinFindingCPUUtilization) || valid.Findings[1].Severity != SeverityUnknown {
-		t.Fatalf("CPU utilization must remain unknown: %+v", valid.Findings[1])
+	for _, finding := range valid.Findings {
+		if finding.ID == string(darwinFindingCPUUtilization) && finding.Severity != SeverityUnknown {
+			t.Fatalf("CPU utilization must remain unknown: %+v", finding)
+		}
 	}
 	for _, result := range []integrationResult{{}, {stdout: []byte("n/a")}, {stdout: []byte("999999"), err: errors.New("failed")}, {stdout: make([]byte, 4097)}} {
 		r := darwinReport("", "", "arm64", result, darwinSamples{})

@@ -25,6 +25,8 @@ type darwinFindingID string
 
 const (
 	darwinFindingMemoryCapacity     darwinFindingID = "memory.capacity"
+	darwinFindingMemoryFree         darwinFindingID = "memory.free"
+	darwinFindingMemorySpeculative  darwinFindingID = "memory.speculative"
 	darwinFindingCPUUtilization     darwinFindingID = "cpu.utilization"
 	darwinFindingProcessCPU         darwinFindingID = "process.cpu"
 	darwinFindingMemorySwap         darwinFindingID = "memory.swap"
@@ -47,6 +49,9 @@ func darwinValue(result integrationResult) string {
 type darwinSamples struct {
 	CPU               *macos.CPUUsage
 	CPUSampleInterval time.Duration
+	Memory            *macos.MemoryUsage
+	MemoryErr         error
+	SwapErr           error
 }
 
 func darwinReport(kernel, cpu, arch string, mem integrationResult, samples darwinSamples) Report {
@@ -68,7 +73,6 @@ func darwinReport(kernel, cpu, arch string, mem integrationResult, samples darwi
 		summary string
 	}{
 		{darwinFindingProcessCPU, AreaProcess, "Per-process CPU sampling unavailable"},
-		{darwinFindingMemorySwap, AreaMemory, "Swap usage unavailable"},
 		{darwinFindingThermalTemperature, AreaThermal, "Temperature sensors unavailable"},
 		{darwinFindingThermalThrottle, AreaThermal, "Thermal throttle counters unavailable"},
 		{darwinFindingDiskActivity, AreaDisk, "Disk activity counters unavailable"},
@@ -76,6 +80,21 @@ func darwinReport(kernel, cpu, arch string, mem integrationResult, samples darwi
 		{darwinFindingPressureMemory, AreaPressure, "Memory pressure unavailable"},
 		{darwinFindingPressureIO, AreaPressure, "I/O pressure unavailable"},
 		{darwinFindingSwapActivity, AreaSwap, "Swap activity unavailable"},
+	}
+	if samples.Memory != nil && samples.MemoryErr == nil {
+		m := samples.Memory
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingMemoryFree), Area: AreaMemory, Severity: SeverityInfo, Summary: fmt.Sprintf("Immediately free memory: %d MiB; excludes speculative pages and is not an available-memory estimate", m.ImmediatelyFreeBytes/(1024*1024)), Evidence: []string{fmt.Sprintf("immediately_free_bytes=%d", m.ImmediatelyFreeBytes)}, Confidence: ConfidenceMedium})
+		if m.SpeculativePagesPresent {
+			r.Findings = append(r.Findings, Finding{ID: string(darwinFindingMemorySpeculative), Area: AreaMemory, Severity: SeverityInfo, Summary: fmt.Sprintf("Speculative memory pages: %d MiB; reported separately, not included in immediately free memory", m.SpeculativeBytes/(1024*1024)), Evidence: []string{fmt.Sprintf("speculative_bytes=%d", m.SpeculativeBytes)}, Confidence: ConfidenceMedium})
+		}
+	} else {
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingMemoryFree), Area: AreaMemory, Severity: SeverityUnknown, Summary: "Immediately free memory unavailable", Confidence: ConfidenceLow})
+	}
+	if samples.Memory != nil && samples.SwapErr == nil {
+		m := samples.Memory
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingMemorySwap), Area: AreaMemory, Severity: SeverityInfo, Summary: fmt.Sprintf("Swap usage: %d MiB used of %d MiB", m.SwapUsedBytes/(1024*1024), m.SwapTotalBytes/(1024*1024)), Evidence: []string{fmt.Sprintf("total_bytes=%d used_bytes=%d free_bytes=%d", m.SwapTotalBytes, m.SwapUsedBytes, m.SwapFreeBytes)}, Confidence: ConfidenceMedium})
+	} else {
+		r.Findings = append(r.Findings, Finding{ID: string(darwinFindingMemorySwap), Area: AreaMemory, Severity: SeverityUnknown, Summary: "Swap usage unavailable", Confidence: ConfidenceLow})
 	}
 	if samples.CPU != nil {
 		u := samples.CPU

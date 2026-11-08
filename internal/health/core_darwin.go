@@ -39,6 +39,10 @@ func collectDarwinWith(ctx context.Context, opts Options, run integrationExecuto
 			samples = darwinSamples{CPU: &usage, CPUSampleInterval: usage.SampleInterval}
 		}
 	}
+	if ctx.Err() == nil {
+		usage, ramErr, swapErr := (macos.MemoryCollector{Runner: darwinDiagnosticRunner{run}}).Collect(ctx, opts.CommandTimeout)
+		samples.Memory, samples.MemoryErr, samples.SwapErr = &usage, ramErr, swapErr
+	}
 	r := darwinReport(kernel, cpu, runtime.GOARCH, memResult, samples)
 	r.CollectedAt = started
 	root := coreRootFilesystemFinding()

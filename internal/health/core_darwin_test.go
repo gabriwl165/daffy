@@ -22,6 +22,15 @@ func TestCollectDarwinUsesBoundedSysctlAndKeepsRootFinding(t *testing.T) {
 			}
 			return integrationResult{stdout: []byte("CPU usage: 10% user, 5% sys, 85% idle\nCPU usage: 20% user, 10% sys, 70% idle\n")}
 		}
+		if cfg.Tool == distribution.Tool(macos.MemoryVMStatExecutable) {
+			return integrationResult{stdout: []byte("Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 20.\nPages speculative: 10.\n")}
+		}
+		if cfg.Tool == distribution.Tool(macos.MemorySysctlExecutable) {
+			if len(cfg.Args) != 2 || cfg.Args[1] != string(macos.MemorySwapUsageKey) {
+				t.Fatalf("unexpected swap args: %+v", cfg.Args)
+			}
+			return integrationResult{stdout: []byte("total = 1G used = 512M free = 512M")}
+		}
 		if cfg.Tool != darwinSysctlCommand || cfg.Timeout != 0 || len(cfg.Args) != 2 || cfg.Args[0] != "-n" {
 			t.Fatalf("unexpected command config: %+v", cfg)
 		}
@@ -42,8 +51,8 @@ func TestCollectDarwinUsesBoundedSysctlAndKeepsRootFinding(t *testing.T) {
 		}
 		return integrationResult{}
 	})
-	if calls != 4 || r.CollectedAt.IsZero() {
-		t.Fatalf("expected four bounded calls and timestamp: %+v", r)
+	if calls != 6 || r.CollectedAt.IsZero() {
+		t.Fatalf("expected six bounded calls and timestamp: %+v", r)
 	}
 	for _, f := range r.Findings {
 		if f.ID == coreFindingDiskRoot {
