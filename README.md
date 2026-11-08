@@ -68,6 +68,9 @@ daffy watch --interval 5s          # Repeated, interruptible observations
 daffy report --json                # One JSON report on stdout
 daffy watch --json                 # One JSON report per line (NDJSON)
 daffy doctor                       # Capabilities, tools, and permissions
+daffy plugins list                 # Available built-in domain analyses
+daffy plugins run docker           # Docker's default diagnostic bundle
+daffy plugins run bazel --path DIR  # Inspect an explicit output/cache directory
 daffy --help
 daffy --version
 ```
@@ -79,6 +82,9 @@ than the watch interval; watch must not overlap scans. Stop with Ctrl-C.
 Completed scans exit 0 even when they contain critical findings: this is a
 diagnostic tool, not a pass/fail health gate. Execution failures exit 1; invalid
 usage exits 2. Interrupted commands exit 130.
+
+See [analysis plugins](docs/plugins.md) for Docker and Bazel scope, safety, and
+extension architecture. Plugins run only when explicitly requested.
 
 ## Coverage
 
