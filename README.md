@@ -4,7 +4,75 @@ A read-only Linux health CLI, written in Go. Investigate overheating, freezes,
 resource contention, and slow boots without applying speculative “optimizations.”
 Designed for Zorin OS and Ubuntu; other Linux distributions may expose fewer checks.
 
-## Build
+## Install on Linux
+
+Ubuntu, Zorin OS, and other Linux distributions on x86-64 or ARM64 can install
+a prebuilt binary without Go or root access. The installer requires `curl`,
+`tar`, `sha256sum`, and standard Linux command-line utilities.
+
+Download the installer, inspect it, then run it:
+
+```sh
+curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
+  https://raw.githubusercontent.com/gabriwl165/daffy-duck/main/setup.sh \
+  --output setup.sh
+less setup.sh
+sh setup.sh
+```
+
+By default this installs only `daffy` into `$HOME/.local/bin`. It never invokes
+`sudo`, installs optional diagnostic tools, or changes shell configuration.
+If that directory is not on your PATH, add it for the current shell:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+daffy --version
+daffy doctor
+daffy scan
+```
+
+To keep the PATH change, add the export to your shell's startup file yourself.
+For a custom destination, use an absolute, writable directory:
+
+```sh
+INSTALL_DIR="$HOME/bin" sh setup.sh
+```
+
+Re-run the installer to update. To install a specific retained build, copy its
+`build-<full-commit-SHA>` tag from [Releases](https://github.com/gabriwl165/daffy-duck/releases):
+
+```sh
+sh setup.sh --version 'build-<full-commit-SHA>'
+```
+
+Replace the placeholder with the actual tag. To uninstall the default install:
+
+```sh
+rm -- "$HOME/.local/bin/daffy"
+```
+
+### Downloads and verification
+
+After CI succeeds for a push or merge to `main` (or `master`), automation
+publishes a retained GitHub Release tagged with the full commit SHA. Each
+release includes Linux amd64/arm64 archives, `SHA256SUMS`, and `setup.sh`.
+The latest release is the installer's default; older builds remain available
+for pinning and rollback. These are builds of the default branch, not a promise
+of a separately tested stable version. Downloads become available only after
+the first publishing workflow completes after this change is merged.
+
+The installer checks the archive against the release's SHA-256 checksum before
+installation and leaves an existing binary untouched if download or validation
+fails. HTTPS and checksums detect transport errors and mismatched assets; the
+checksums are **not independent signatures** and still require trusting this
+repository and its GitHub release workflow.
+
+For manual installation, download the matching `daffy_linux_amd64.tar.gz` or
+`daffy_linux_arm64.tar.gz` and `SHA256SUMS` from the same release, verify the
+matching checksum, then extract and install `daffy` into a writable PATH
+directory. If no release exists yet, build from source below.
+
+## Build from source
 
 Requires Go 1.24 or newer. No third-party Go dependencies.
 
