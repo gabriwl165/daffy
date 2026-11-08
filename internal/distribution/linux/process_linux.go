@@ -82,6 +82,10 @@ func (f linuxFinder) Find(ctx context.Context, t process.ProcessTarget) ([]proce
 			if os.IsNotExist(err) {
 				continue
 			}
+			if os.IsPermission(err) {
+				// Inaccessible processes cannot be ruled out as socket owners.
+				continue
+			}
 			incomplete = true
 			continue
 		}
@@ -90,6 +94,9 @@ func (f linuxFinder) Find(ctx context.Context, t process.ProcessTarget) ([]proce
 			target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
 			if err != nil {
 				if os.IsNotExist(err) {
+					continue
+				}
+				if os.IsPermission(err) {
 					continue
 				}
 				incomplete = true
@@ -103,6 +110,9 @@ func (f linuxFinder) Find(ctx context.Context, t process.ProcessTarget) ([]proce
 		if found {
 			identity, e := readStartTime(filepath.Join(f.procRoot, entry.Name(), "stat"))
 			if e != nil {
+				if os.IsPermission(e) {
+					continue
+				}
 				incomplete = true
 				continue
 			}
