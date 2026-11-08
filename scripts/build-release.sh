@@ -16,14 +16,15 @@ hash_files() {
 commit=${GITHUB_SHA:-$(git -C "$root" rev-parse HEAD)}
 case "$commit" in ''|*[!0-9a-fA-F]*) echo "invalid commit SHA" >&2; exit 1;; esac
 [ "${#commit}" -eq 40 ] || { echo "commit SHA must be 40 characters" >&2; exit 1; }
-for target in linux_amd64 linux_arm64 darwin_arm64; do
+for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
   case "$target" in
     linux_amd64) goos=linux; goarch=amd64;;
     linux_arm64) goos=linux; goarch=arm64;;
     darwin_arm64) goos=darwin; goarch=arm64;;
+    darwin_amd64) goos=darwin; goarch=amd64;;
   esac
   CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "-X main.version=$commit" -o "$tmp/daffy" ./cmd/daffy
   tar -czf "$out/daffy_${target}.tar.gz" -C "$tmp" daffy
 done
 cp "$root/setup.sh" "$out/setup.sh"
-(cd "$out" && hash_files daffy_linux_amd64.tar.gz daffy_linux_arm64.tar.gz daffy_darwin_arm64.tar.gz setup.sh > SHA256SUMS)
+(cd "$out" && hash_files daffy_linux_amd64.tar.gz daffy_linux_arm64.tar.gz daffy_darwin_amd64.tar.gz daffy_darwin_arm64.tar.gz setup.sh > SHA256SUMS)

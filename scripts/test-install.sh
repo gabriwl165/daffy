@@ -41,7 +41,7 @@ fi
 chmod +x "$tmp/mock/"*
 printf '#!/bin/sh\necho fixture\n' >"$tmp/input/daffy"
 chmod +x "$tmp/input/daffy"
-for archive in daffy_linux_amd64 daffy_linux_arm64 daffy_darwin_arm64; do tar -czf "$tmp/$archive.tar.gz" -C "$tmp/input" daffy; done
+for archive in daffy_linux_amd64 daffy_linux_arm64 daffy_darwin_amd64 daffy_darwin_arm64; do tar -czf "$tmp/$archive.tar.gz" -C "$tmp/input" daffy; done
 (cd "$tmp" && hash_files daffy_linux_*.tar.gz daffy_darwin_*.tar.gz >SHA256SUMS)
 export FIXTURE_DIR="$tmp" CURL_LOG="$tmp/curl.log" TMPDIR="$tmp/temp" REAL_UNAME REAL_HOST_OS="$host_os"
 export PATH="$tmp/mock:$PATH"
@@ -50,6 +50,7 @@ case "$host_os:$host_arch" in
   Linux:x86_64|Linux:amd64) native_os=Linux; native_arch=amd64; native_platform=linux;;
   Linux:aarch64|Linux:arm64) native_os=Linux; native_arch=arm64; native_platform=linux;;
   Darwin:arm64|Darwin:aarch64) native_os=Darwin; native_arch=arm64; native_platform=darwin;;
+  Darwin:x86_64|Darwin:amd64) native_os=Darwin; native_arch=amd64; native_platform=darwin;;
   *) echo "unsupported test host: $host_os/$host_arch" >&2; exit 1;;
 esac
 HOME="$tmp/home with spaces" sh "$root/setup.sh" >/dev/null
@@ -66,6 +67,9 @@ grep -q 'daffy_linux_arm64.tar.gz' "$CURL_LOG"
 MOCK_OS=Darwin MOCK_ARCH=arm64 INSTALL_DIR="$tmp/mac" sh "$root/setup.sh" >/dev/null
 [ -x "$tmp/mac/daffy" ]
 grep -q 'daffy_darwin_arm64.tar.gz' "$CURL_LOG"
+MOCK_OS=Darwin MOCK_ARCH=x86_64 INSTALL_DIR="$tmp/mac-intel" sh "$root/setup.sh" >/dev/null
+[ -x "$tmp/mac-intel/daffy" ]
+grep -q 'daffy_darwin_amd64.tar.gz' "$CURL_LOG"
 mkdir -p "$tmp/preserve-dir/daffy" "$tmp/target-dir" "$tmp/symlink-dir"
 printf old >"$tmp/target-dir/keep"
 ln -s "$tmp/target-dir" "$tmp/symlink-dir/daffy"
@@ -97,7 +101,7 @@ printf not-a-tar >"$tmp/daffy_linux_amd64.tar.gz"
 (cd "$tmp" && hash_files daffy_linux_amd64.tar.gz >SHA256SUMS)
 if INSTALL_DIR="$tmp/preserve" sh "$root/setup.sh" >/dev/null 2>&1; then exit 1; fi
 [ "$(cat "$tmp/preserve/daffy")" = old ]
-for artifact in daffy_linux_amd64 daffy_darwin_arm64; do
+for artifact in daffy_linux_amd64 daffy_darwin_amd64 daffy_darwin_arm64; do
   for kind in symlink hardlink traversal extra; do
     python3 - "$tmp/$artifact.tar.gz" "$kind" <<'PY'
 import io, sys, tarfile
@@ -115,7 +119,7 @@ with tarfile.open(path, 'w:gz') as archive:
     else: member('daffy'); member('extra')
 PY
     (cd "$tmp" && hash_files "$artifact.tar.gz" >SHA256SUMS)
-    if [ "$artifact" = daffy_darwin_arm64 ]; then test_os=Darwin; test_arch=arm64; else test_os=Linux; test_arch=x86_64; fi
+    case "$artifact" in daffy_darwin_amd64) test_os=Darwin; test_arch=x86_64;; daffy_darwin_arm64) test_os=Darwin; test_arch=arm64;; *) test_os=Linux; test_arch=x86_64;; esac
     if MOCK_OS="$test_os" MOCK_ARCH="$test_arch" INSTALL_DIR="$tmp/preserve" sh "$root/setup.sh" >/dev/null 2>&1; then exit 1; fi
     [ "$(cat "$tmp/preserve/daffy")" = old ]
   done
