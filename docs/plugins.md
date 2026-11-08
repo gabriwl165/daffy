@@ -41,6 +41,10 @@ The bundle is a sequence of observations, not an atomic snapshot.
 - **Configuration:** examines selected container inspection fields for diagnostic
   findings. Missing resource limits and privileged execution are contextual
   observations, not proof of a security incident or performance problem.
+  Selected state fields also identify a recorded OOM kill or a stopped container
+  with a nonzero exit code. Restart counts are historical observations, not proof
+  of a current restart loop. Findings can include suggested next steps; Daffy
+  does not read container logs, change limits, or restart containers.
 
 Raw inspection documents, environment variables, command arguments and raw
 command stderr are not included in reports. Container names and identifiers can
