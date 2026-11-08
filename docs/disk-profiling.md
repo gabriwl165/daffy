@@ -105,3 +105,16 @@ boundaries use typed path keys. Hotspot selection uses bounded min-heaps; final
 sorting is limited to the retained results. Path processing costs still scale
 with path length. Tests and benchmarks cover wide/deep trees and large mount
 tables; benchmark timings are observations, not performance guarantees.
+
+The optional scanner progress callback receives typed counters and the active
+directory at directory/batch boundaries. Intermediate updates are throttled to
+250 ms, with initial and final updates even on interruption. It runs
+synchronously: callers must keep it cheap and nonblocking. No per-entry path
+formatting or timing is added. Progress uses O(1) additional state and does not
+add a second walk; it cannot report while a filesystem call is blocked.
+
+Hotspot replacement repairs the heap root once rather than popping and pushing
+two boxed entries. Ranking remains O(log K) per accepted replacement and O(K)
+retained state, with final O(K log K) ordering, for top-list limit K. This is a
+constant-factor/allocation improvement, not a new asymptotic bound. Existing
+mount/exclusion indexing and single-postorder directory aggregation are retained.

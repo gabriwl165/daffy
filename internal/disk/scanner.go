@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 const (
@@ -28,6 +29,7 @@ type scanner struct {
 	platform  Platform
 	openRoot  func(string) (Directory, error)
 	candidate func(string, Totals) (Candidate, bool)
+	now       func() time.Time
 }
 
 func (s *scanner) open(path string) (Directory, error) {
@@ -63,12 +65,17 @@ func offer(h *rankHeap, v rankedEntry, n int) {
 		return
 	}
 	if rankedBefore(v, (*h)[0]) {
-		heap.Pop(h)
-		heap.Push(h, v)
+		(*h)[0] = v
+		heap.Fix(h, 0)
 	}
 }
 
 func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr error) {
+	now := s.now
+	if now == nil {
+		now = time.Now
+	}
+	started := now()
 	if c.TopN < 0 || c.TopN > MaxTopN {
 		return Report{}, fmt.Errorf("TopN must be between 0 and %d", MaxTopN)
 	}
@@ -87,6 +94,21 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 		ctx, cancel = context.WithTimeout(parent, c.TimeBudget)
 	}
 	defer cancel()
+	progressPath := ""
+	lastProgress := time.Time{}
+	notifyProgress := func(force bool) {
+		if c.OnProgress == nil {
+			return
+		}
+		current := now()
+		if !force && !lastProgress.IsZero() && current.Sub(lastProgress) < 250*time.Millisecond {
+			return
+		}
+		lastProgress = current
+		c.OnProgress(Progress{Elapsed: current.Sub(started), Files: report.Coverage.Files, Directories: report.Coverage.Directories, SkippedEntries: report.Coverage.SkippedEntries, CurrentPath: progressPath})
+	}
+	notifyProgress(true)
+	defer func() { notifyProgress(true) }()
 	selected := c.Path
 	if selected == "" {
 		selected = "/"
@@ -176,6 +198,8 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 	candidateLimitNoted := false
 	var walk func(Directory, string, bool) (Totals, error)
 	walk = func(d Directory, path string, isRoot bool) (Totals, error) {
+		progressPath = path
+		notifyProgress(false)
 		var total Totals
 		if e := ctx.Err(); e != nil {
 			return total, e
@@ -207,6 +231,8 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 			report.Coverage.Directories++
 			for {
 				entries, re := d.ReadDir(c.BatchSize)
+				progressPath = path
+				notifyProgress(false)
 				for _, ent := range entries {
 					if ctx.Err() != nil {
 						return total, ctx.Err()
@@ -272,6 +298,8 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 				if ce := ctx.Err(); ce != nil {
 					return total, ce
 				}
+				progressPath = path
+				notifyProgress(false)
 			}
 			if s.candidate != nil {
 				if candidate, ok := s.candidate(path, total); ok {

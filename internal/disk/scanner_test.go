@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 type fakePlatform struct {
@@ -40,6 +41,102 @@ func TestScannerConfigAndMountDiscoveryErrors(t *testing.T) {
 		if _, e := (&scanner{platform: &fakePlatform{}}).Scan(context.Background(), c); e == nil {
 			t.Fatalf("invalid config accepted: %+v", c)
 		}
+	}
+}
+
+func TestScannerProgressInitialFinalAndError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var got []Progress
+	s := &scanner{platform: &fakePlatform{mounts: []Mount{diskMount("/", "root", FilesystemExt4)}}}
+	_, err := s.Scan(context.Background(), Config{Path: root, OnProgress: func(p Progress) { got = append(got, p) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 2 || got[0].Files != 0 || got[len(got)-1].Files != 1 || got[len(got)-1].Directories != 1 {
+		t.Fatalf("unexpected progress: %+v", got)
+	}
+	if got[0].CurrentPath != "" {
+		t.Fatalf("initial path=%q", got[0].CurrentPath)
+	}
+
+	var failures []Progress
+	bad := &scanner{platform: &fakePlatform{mountErr: os.ErrPermission}}
+	if _, err = bad.Scan(context.Background(), Config{OnProgress: func(p Progress) { failures = append(failures, p) }}); err == nil {
+		t.Fatal("expected error")
+	}
+	if len(failures) != 2 {
+		t.Fatalf("error path callbacks=%d", len(failures))
+	}
+}
+
+func TestScannerProgressCanceledAndUnset(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls int
+	s := &scanner{platform: &fakePlatform{}}
+	if _, err := s.Scan(ctx, Config{OnProgress: func(Progress) { calls++ }}); err == nil {
+		t.Fatal("expected cancellation")
+	}
+	if calls != 2 {
+		t.Fatalf("callbacks=%d", calls)
+	}
+	s.platform = &fakePlatform{mounts: []Mount{diskMount("/", "root", FilesystemExt4)}}
+	if _, err := s.Scan(context.Background(), Config{Path: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("unset callback invoked: %d", calls)
+	}
+}
+
+func TestOfferReplacementPreservesRanking(t *testing.T) {
+	h := rankHeap{}
+	for _, v := range []rankedEntry{{"c", Totals{AllocatedBytes: 1}}, {"b", Totals{AllocatedBytes: 2}}, {"a", Totals{AllocatedBytes: 2}}, {"d", Totals{AllocatedBytes: 3}}} {
+		offer(&h, v, 2)
+	}
+	if h.Len() != 2 || !((h[0].path == "a" && h[1].path == "d") || (h[0].path == "d" && h[1].path == "a")) {
+		t.Fatalf("heap=%+v", h)
+	}
+}
+
+func TestScannerProgressThrottleAndNestedFinalPath(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "nested")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "file"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1, 0)
+	s := &scanner{platform: &fakePlatform{mounts: []Mount{diskMount("/", "root", FilesystemExt4)}}, now: func() time.Time { now = now.Add(100 * time.Millisecond); return now }}
+	var got []Progress
+	_, err := s.Scan(context.Background(), Config{Path: root, OnProgress: func(p Progress) { got = append(got, p) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 3 {
+		t.Fatalf("throttling callbacks=%d: %+v", len(got), got)
+	}
+	for i := 2; i < len(got)-1; i++ {
+		if got[i].Elapsed-got[i-1].Elapsed < 250*time.Millisecond {
+			t.Fatalf("unthrottled callbacks: %+v", got)
+		}
+	}
+	final := got[len(got)-1]
+	if final.CurrentPath != filepath.Clean(root) || final.Files != 1 || final.Directories != 2 {
+		t.Fatalf("final=%+v", final)
+	}
+}
+
+func BenchmarkOffer(b *testing.B) {
+	h := make(rankHeap, 0, 100)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		offer(&h, rankedEntry{path: fmt.Sprintf("%08d", i), totals: Totals{AllocatedBytes: int64(i)}}, 100)
 	}
 }
 
