@@ -119,6 +119,38 @@ func TestRuntimeSamplesRankPeaksAndKeepChurn(t *testing.T) {
 	}
 }
 
+func TestRuntimeSamplingPreservesContextAndContainerTarget(t *testing.T) {
+	id := strings.Repeat("a", 64)
+	listed := []byte(`{"ID":"` + id + `","Names":"api"}`)
+	stats := []byte(`{"ID":"` + id + `","Name":"api","CPUPerc":"12%","MemUsage":"1/2","MemPerc":"20%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	r := &fakeRunner{outputs: [][]byte{listed, []byte(id + "\n"), stats, listed, []byte(id + "\n"), stats}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Context: "dev", Containers: []string{"api"}, Samples: 2, Interval: 100 * time.Millisecond}})
+	if err != nil || o.Details.Docker.RuntimeTrend == nil || o.Details.Docker.RuntimeTrend.SampleCount != 2 || len(o.Details.Docker.Runtime) != 1 || o.Details.Docker.Runtime[0].ID != id {
+		t.Fatalf("targeted trend: %#v %v", o, err)
+	}
+	for i, args := range r.args {
+		if !containsArg(args, "--context") || !containsArg(args, "dev") {
+			t.Errorf("call %d lost context: %v", i, args)
+		}
+		if i%3 == 2 && (!containsArg(args, "--") || !containsArg(args, id)) {
+			t.Errorf("stats call %d became unqualified: %v", i, args)
+		}
+	}
+}
+
+func TestRuntimeSamplingProjectNoMatchesStaysEmpty(t *testing.T) {
+	r := &fakeRunner{outputs: [][]byte{[]byte(""), []byte(""), []byte(""), []byte("")}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Project: "missing", Samples: 2, Interval: 100 * time.Millisecond}})
+	if err != nil || len(o.Details.Docker.Runtime) != 0 || o.Details.Docker.Runtime == nil || o.Details.Docker.RuntimeTrend == nil || o.Details.Docker.RuntimeTrend.SampleCount != 2 {
+		t.Fatalf("no-match project: %#v %v", o, err)
+	}
+	for _, args := range r.args {
+		if containsArg(args, "stats") {
+			t.Fatalf("unexpected unqualified stats call: %v", args)
+		}
+	}
+}
+
 func TestRuntimeTrendTieOrderIsDeterministic(t *testing.T) {
 	ids := []string{strings.Repeat("b", 64), strings.Repeat("a", 64)}
 	row := func(id string) []byte {
