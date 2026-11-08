@@ -163,6 +163,3 @@ const (
 	FilesystemAutofs          Filesystem = "autofs"
 	FilesystemFuse            Filesystem = "fuse"
 )
-
-func Scan(ctx context.Context, c Config) (Report, error) { return NewScanner().Scan(ctx, c) }
-func NewScanner() Scanner                                { return newScanner() }

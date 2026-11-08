@@ -97,5 +97,3 @@ func unescapeMount(s string) (string, error) {
 	}
 	return b.String(), nil
 }
-
-func newScanner() Scanner { return &scanner{platform: linuxScanner{}} }

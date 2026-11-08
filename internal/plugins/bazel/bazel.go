@@ -17,7 +17,7 @@ import (
 type Plugin struct{ scanner disk.Scanner }
 
 const (
-	maxTopN          = 10000
+	maxTopN          = disk.MaxTopN
 	issueInvalidPath = "invalid-path"
 	issueCancelled   = "cancelled"
 	issueScanError   = "scan-error"
@@ -49,7 +49,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 		return out, fmt.Errorf("%w: explicit path required", plugins.ErrInvalid)
 	}
 	if req.Options.TopN < 0 || req.Options.TopN > maxTopN {
-		return out, fmt.Errorf("%w: TopN must be between 0 and 10000", plugins.ErrInvalid)
+		return out, fmt.Errorf("%w: TopN must be between 0 and %d", plugins.ErrInvalid, maxTopN)
 	}
 	fi, err := os.Lstat(path)
 	if err != nil {

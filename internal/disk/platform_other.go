@@ -10,5 +10,3 @@ func (unsupportedPlatform) Mounts() ([]Mount, error) {
 func (unsupportedPlatform) Capacity(string) (MountCapacity, error) {
 	return MountCapacity{}, ErrUnsupportedPlatform
 }
-
-func newScanner() Scanner { return &scanner{platform: unsupportedPlatform{}} }
