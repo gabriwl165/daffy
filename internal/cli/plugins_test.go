@@ -132,6 +132,19 @@ func TestRuntimeSamplingFlagsAndValidation(t *testing.T) {
 	}
 }
 
+func TestRuntimeTrendTextRendering(t *testing.T) {
+	var b bytes.Buffer
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationRuntime, Status: plugins.StatusComplete, Details: plugins.Details{Docker: &plugins.DockerDetails{RuntimeTrend: &plugins.DockerRuntimeTrend{SampleCount: 3, Containers: []plugins.DockerRuntimeTrendItem{{ID: "safe-id", Name: "service", PeakCPUPercent: 125, PeakMemoryPercent: 50}}}}}}}}
+	if err := printPluginReport(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Runtime peaks (3 samples)", "peak CPU 125.00% memory 50.00%"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in %s", want, b.String())
+		}
+	}
+}
+
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("writer failed") }

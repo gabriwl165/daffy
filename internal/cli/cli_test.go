@@ -37,6 +37,7 @@ func TestBuiltinAliasesMatchPluginRun(t *testing.T) {
 	}{
 		{"docker default", plugins.PluginDocker, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{}), op(plugins.OperationRuntime, true, plugins.SupportedOptions{})}, nil},
 		{"docker explicit", plugins.PluginDocker, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{}), op(plugins.OperationRuntime, false, plugins.SupportedOptions{})}, []string{"runtime"}},
+		{"docker runtime flags alias", plugins.PluginDocker, []plugins.Operation{op(plugins.OperationRuntime, false, plugins.SupportedOptions{RuntimeTrends: true})}, []string{"runtime", "--samples=2", "--interval=100ms", "--runtime-top=3", "--cpu-threshold=125", "--memory-threshold=80"}},
 		{"bazel default", plugins.PluginBazel, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{Path: true, TopN: true})}, []string{"--path=/tmp", "--top=7"}},
 		{"bazel explicit", plugins.PluginBazel, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{Path: true, TopN: true})}, []string{"disk", "--path=/tmp", "--top=7"}},
 		{"docker invalid options", plugins.PluginDocker, []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}, []string{"--top=7"}},
