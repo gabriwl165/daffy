@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -98,6 +97,10 @@ func integrationFinding(f Finding) Finding {
 func Collect(ctx context.Context, opts Options) Report {
 	started := time.Now()
 	r := CollectCore(ctx, opts)
+	if !useLinuxIntegrations {
+		r.Duration = time.Since(started)
+		return r
+	}
 	var fs []Finding
 	if ctx.Err() == nil {
 		fs = append(fs, integrationJournal(ctx, opts, journalCurrent)...)
@@ -353,13 +356,17 @@ func integrationSMARTStatus(output string) (severity Severity, summary string, r
 
 // Doctor reports platform, filesystem and optional-tool availability without running diagnostics.
 func Doctor(ctx context.Context, o Options) []Check {
+	return doctorPlatform(ctx, o)
+}
+
+func doctorLinux(ctx context.Context, o Options) []Check {
 	etc := o.EtcRoot
 	if etc == "" {
 		etc = "/etc"
 	}
 	distro, _ := parseOSRelease(filepath.Join(etc, "os-release"))
 	adapter := selectDistroAdapter(distro["ID"])
-	checks := []Check{{Name: "linux", Available: runtime.GOOS == "linux", Detail: runtime.GOOS}, {Name: "distro", Available: true, Detail: adapter.Name()}}
+	checks := []Check{{Name: "linux", Available: true, Detail: "Linux"}, {Name: "distro", Available: true, Detail: adapter.Name()}}
 	for _, item := range []struct{ name, root string }{{"procfs", o.ProcRoot}, {"sysfs", o.SysRoot}} {
 		root := item.root
 		if root == "" {

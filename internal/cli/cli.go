@@ -177,8 +177,8 @@ func Run(ctx context.Context, rc RunConfig) int {
 		fmt.Fprintln(errOut, "report requires --json")
 		return int(exitUsage)
 	}
-	if runtime.GOOS != "linux" {
-		fmt.Fprintf(errOut, "daffy supports Linux only (current platform: %s)\n", runtime.GOOS)
+	if !health.SupportedPlatform() {
+		fmt.Fprintf(errOut, "daffy health diagnostics are unsupported on %s\n", runtime.GOOS)
 		return int(exitFailure)
 	}
 	if cmd == commandWatch {

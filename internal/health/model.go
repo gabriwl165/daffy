@@ -78,7 +78,10 @@ type Check struct {
 	Detail    string `json:"detail"`
 }
 
-// CollectCore gathers read-only Linux health signals from procfs and sysfs.
+// CollectCore gathers read-only signals through the build's native provider.
 func CollectCore(ctx context.Context, opts Options) Report {
-	return collectCore(ctx, opts)
+	return collectPlatformCore(ctx, opts)
 }
+
+// SupportedPlatform reports whether this build has a native health provider.
+func SupportedPlatform() bool { return platformSupported }
