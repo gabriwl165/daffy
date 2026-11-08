@@ -333,7 +333,7 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 					return e
 				}
 				for _, v := range d.RuntimeTrend.Containers {
-					if _, e := fmt.Fprintf(w, "    %s %s peak CPU %.2f%% memory %.2f%%\n", safe(v.ID), safe(v.Name), v.PeakCPUPercent, v.PeakMemoryPercent); e != nil {
+					if _, e := fmt.Fprintf(w, "    %s %s peak CPU %.2f%% memory %.2f%% cpu_threshold_exceeded=%t memory_threshold_exceeded=%t\n", safe(v.ID), safe(v.Name), v.PeakCPUPercent, v.PeakMemoryPercent, v.CPUThresholdExceeded, v.MemoryThresholdExceeded); e != nil {
 						return e
 					}
 				}
