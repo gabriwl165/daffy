@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/gabriwl165/daffy/internal/disk"
+	"github.com/gabriwl165/daffy/internal/distribution"
 	"github.com/gabriwl165/daffy/internal/health"
 	"github.com/gabriwl165/daffy/internal/plugins"
 	"github.com/gabriwl165/daffy/internal/plugins/bazel"
@@ -22,7 +23,7 @@ import (
 
 var version = "dev"
 
-const usage = `daffy — read-only system diagnostics
+const usage = `daffy — read-only system diagnostics (except explicit process control)
 
 Usage: daffy [scan] [options]
        daffy report --json [options]
@@ -33,11 +34,13 @@ Usage: daffy [scan] [options]
        daffy docker [disk|runtime|config] [options]
        daffy bazel [disk] [options]
        daffy plugins list|run ...
+       daffy kill pid N | kill port N
 
-Commands: scan (default), watch, report, doctor, disk, docker, bazel, plugins
+Commands: scan (default), watch, report, doctor, disk, docker, bazel, plugins, kill
 Options: --sample duration --timeout duration --include-sensitive --privileged
          --json (scan/report; watch emits NDJSON) --interval duration (watch)
 Exit codes: 0 completed (findings do not fail), 1 execution failure, 2 usage error.
+Diagnostics are read-only. kill is destructive process control and sends SIGTERM only.
 No files are written. Sensitive log collection and root checks require explicit opt-in.
 `
 
@@ -46,6 +49,7 @@ type Deps struct {
 	Doctor  func(context.Context, health.Options) []health.Check
 	Disk    disk.Scanner
 	Plugins *plugins.Registry
+	Process distribution.ProcessController
 }
 
 type RunConfig struct {
@@ -65,6 +69,7 @@ const (
 	commandDisk   command = "disk"
 	commandDocker command = "docker"
 	commandBazel  command = "bazel"
+	commandKill   command = "kill"
 )
 
 type exitCode int
@@ -82,7 +87,7 @@ func DefaultDeps() Deps {
 	if err != nil {
 		panic("invalid built-in plugin registry: " + err.Error())
 	}
-	return Deps{Collect: health.Collect, Doctor: health.Doctor, Disk: scanner, Plugins: r}
+	return Deps{Collect: health.Collect, Doctor: health.Doctor, Disk: scanner, Plugins: r, Process: distribution.NewProcessController()}
 }
 
 type config struct {
@@ -110,6 +115,9 @@ func Run(ctx context.Context, rc RunConfig) int {
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		fmt.Fprint(out, usage)
 		return int(exitSuccess)
+	}
+	if len(args) > 0 && command(args[0]) == commandKill {
+		return runKill(ctx, args[1:], out, errOut, deps.Process)
 	}
 	if len(args) > 0 && args[0] == "--version" {
 		fmt.Fprintln(out, "daffy", buildVersion)
