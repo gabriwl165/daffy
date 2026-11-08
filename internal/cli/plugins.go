@@ -252,6 +252,11 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 			if _, e := fmt.Fprintf(w, "  [%s] %s\n", safe(string(f.Severity)), safe(f.Summary)); e != nil {
 				return e
 			}
+			if f.Recommendation != "" {
+				if _, e := fmt.Fprintf(w, "    Recommendation: %s\n", safe(f.Recommendation)); e != nil {
+					return e
+				}
+			}
 		}
 		for _, i := range o.Issues {
 			if _, e := fmt.Fprintf(w, "  Issue: %s\n", safe(i.Summary)); e != nil {

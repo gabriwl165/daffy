@@ -13,6 +13,17 @@ import (
 	"github.com/gabriwl165/daffy/internal/plugins"
 )
 
+func TestPrintPluginReportRecommendationEscaping(t *testing.T) {
+	var out bytes.Buffer
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationConfig, Status: plugins.StatusComplete, Findings: []plugins.Finding{{Severity: plugins.SeverityWarning, Summary: "failure", Recommendation: "safe\x1b[2J\nrecommendation"}}}}}
+	if err := printPluginReport(&out, r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Recommendation: safe[2Jrecommendation") || strings.Contains(out.String(), "\x1b") {
+		t.Fatalf("recommendation not escaped: %q", out.String())
+	}
+}
+
 func TestDefaultDepsHasBuiltinPluginRegistry(t *testing.T) {
 	r := DefaultDeps().Plugins
 	if r == nil {

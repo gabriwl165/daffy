@@ -119,6 +119,8 @@ type DockerContainerConfig struct {
 	ReadonlyRootfs *bool  `json:"readonly_rootfs,omitempty"`
 	LogDriver      string `json:"log_driver,omitempty"`
 	RestartCount   int64  `json:"restart_count"`
+	OOMKilled      *bool  `json:"oom_killed,omitempty"`
+	ExitCode       *int64 `json:"exit_code,omitempty"`
 }
 type DockerDetails struct {
 	DiskUsage []DockerDiskUsage       `json:"disk_usage,omitempty"`

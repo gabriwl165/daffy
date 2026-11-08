@@ -112,6 +112,41 @@ func TestConfigEmptyAndPartialInspect(t *testing.T) {
 		t.Fatal("missing host config evidence must be partial")
 	}
 }
+
+func TestConfigFailureDiagnostics(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	rows := `[{"Id":"` + id + `","Name":"/oom","State":{"Status":"exited","OOMKilled":true,"ExitCode":137},"HostConfig":{"Memory":1,"Privileged":false}},{"Id":"` + id + `","Name":"/history","State":{"Status":"running","OOMKilled":false,"ExitCode":0},"HostConfig":{"Memory":1,"Privileged":false}}]`
+	// Duplicate IDs are invalid in one batch; exercise independent inspect runs.
+	check := func(name, status, extra string, wantWarn, wantInfo bool) {
+		t.Helper()
+		payload := `[{"Id":"` + id + `","Name":"/` + name + `","RestartCount":2,"State":{"Status":"` + status + `",` + extra + `},"HostConfig":{"Memory":1,"Privileged":false}}]`
+		r := &fakeRunner{outputs: [][]byte{[]byte(id + "\n"), []byte(payload)}}
+		o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(o.Details.Docker.Config) != 1 {
+			t.Fatalf("config: %+v", o)
+		}
+		for _, f := range o.Findings {
+			if f.Code == findingContainerFailure && (f.Severity == plugins.SeverityWarning) != wantWarn {
+				t.Fatalf("unexpected finding: %+v", f)
+			}
+			if f.Code == findingContainerFailure && wantWarn && f.Recommendation == "" {
+				t.Fatalf("missing recommendation: %+v", f)
+			}
+			if f.Code == findingContainerFailure && strings.Contains(f.Summary, "historically") && !wantInfo {
+				t.Fatalf("unexpected historical report: %+v", f)
+			}
+		}
+		if wantInfo && !strings.Contains(o.Findings[len(o.Findings)-1].Summary, "historically") {
+			t.Fatalf("historical count not qualified: %+v", o.Findings)
+		}
+	}
+	_ = rows
+	check("oom", "exited", `"OOMKilled":true,"ExitCode":137`, true, false)
+	check("old", "running", `"OOMKilled":false,"ExitCode":0`, false, true)
+}
 func TestAnalyzeValidationAndCommandRunner(t *testing.T) {
 	r := &fakeRunner{}
 	p := New(r)
