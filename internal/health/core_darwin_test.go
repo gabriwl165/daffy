@@ -6,12 +6,22 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/gabriwl165/daffy/internal/distribution"
+	"github.com/gabriwl165/daffy/internal/distribution/macos"
 )
 
 func TestCollectDarwinUsesBoundedSysctlAndKeepsRootFinding(t *testing.T) {
 	calls := 0
 	r := collectDarwinWith(context.Background(), Options{}, func(_ context.Context, cfg commandConfig) integrationResult {
 		calls++
+		if cfg.Tool == distribution.Tool(macos.CPUExecutable) {
+			if cfg.Timeout != 3*time.Second || len(cfg.Args) != 7 {
+				t.Fatalf("unexpected CPU command config: %+v", cfg)
+			}
+			return integrationResult{stdout: []byte("CPU usage: 10% user, 5% sys, 85% idle\nCPU usage: 20% user, 10% sys, 70% idle\n")}
+		}
 		if cfg.Tool != darwinSysctlCommand || cfg.Timeout != 0 || len(cfg.Args) != 2 || cfg.Args[0] != "-n" {
 			t.Fatalf("unexpected command config: %+v", cfg)
 		}
@@ -32,8 +42,8 @@ func TestCollectDarwinUsesBoundedSysctlAndKeepsRootFinding(t *testing.T) {
 		}
 		return integrationResult{}
 	})
-	if calls != 3 || r.CollectedAt.IsZero() {
-		t.Fatalf("expected three bounded calls and timestamp: %+v", r)
+	if calls != 4 || r.CollectedAt.IsZero() {
+		t.Fatalf("expected four bounded calls and timestamp: %+v", r)
 	}
 	for _, f := range r.Findings {
 		if f.ID == coreFindingDiskRoot {
