@@ -68,11 +68,11 @@ daffy watch --interval 5s          # Repeated, interruptible observations
 daffy report --json                # One JSON report on stdout
 daffy watch --json                 # One JSON report per line (NDJSON)
 daffy doctor                       # Capabilities, tools, and permissions
-daffy disk scan                    # Space hotspots across eligible local mounts
-daffy disk scan /home --format json # Narrow the scope; flags may follow the path
+daffy disk                         # Space hotspots across eligible local mounts
+daffy disk /home --format json     # Narrow the scope; flags may follow the path
 daffy plugins list                 # Available built-in domain analyses
-daffy plugins run docker           # Docker's default diagnostic bundle
-daffy plugins run bazel --path DIR  # Inspect an explicit output/cache directory
+daffy docker                       # Docker's default diagnostic bundle
+daffy bazel --path DIR              # Inspect an explicit output/cache directory
 daffy --help
 daffy --version
 ```
@@ -87,6 +87,9 @@ usage exits 2. Interrupted commands exit 130.
 
 See [analysis plugins](docs/plugins.md) for Docker and Bazel scope, safety, and
 extension architecture. Plugins run only when explicitly requested.
+
+`daffy plugins run docker`, `daffy plugins run bazel`, and `daffy disk scan`
+remain supported. Short commands use the same handlers, options, and exit codes.
 
 ### Disk space profiling
 

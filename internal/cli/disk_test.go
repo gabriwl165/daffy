@@ -49,18 +49,18 @@ func TestDiskRunConfigJSONAndPartial(t *testing.T) {
 
 func TestDiskDispatchAndHelp(t *testing.T) {
 	calls := 0
+	var paths []string
 	d := Deps{Disk: diskFunc(func(_ context.Context, c disk.Config) (disk.Report, error) {
 		calls++
-		if c.Path != "" {
-			t.Errorf("default path = %q", c.Path)
-		}
+		paths = append(paths, c.Path)
 		return disk.Report{}, nil
 	})}
 	for _, tc := range []struct {
 		args []string
 		want int
 		call bool
-	}{{[]string{"disk", "scan"}, 0, true}, {[]string{"disk", "--help"}, 0, false}, {[]string{"disk", "scan", "/home", "--help"}, 0, false}} {
+		path string
+	}{{[]string{"disk", "scan"}, 0, true, ""}, {[]string{"disk"}, 0, true, ""}, {[]string{"disk", "/home"}, 0, true, "/home"}, {[]string{"disk", "--help"}, 0, false, ""}, {[]string{"disk", "scan", "/home", "--help"}, 0, false, ""}} {
 		before := calls
 		var out, errout bytes.Buffer
 		if got := Run(context.Background(), RunConfig{Args: tc.args, Out: &out, ErrOut: &errout, Deps: d}); got != tc.want {
@@ -68,6 +68,9 @@ func TestDiskDispatchAndHelp(t *testing.T) {
 		}
 		if (calls > before) != tc.call {
 			t.Fatalf("%v calls=%d", tc.args, calls)
+		}
+		if tc.call && paths[len(paths)-1] != tc.path {
+			t.Fatalf("%v path=%q want %q", tc.args, paths[len(paths)-1], tc.path)
 		}
 	}
 	for _, a := range [][]string{{"disk", "scan", "--exclude"}, {"disk", "scan", "/a", "/b"}, {"disk", "scan", "--", "--help", "/extra"}} {

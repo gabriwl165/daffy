@@ -34,6 +34,11 @@ const pluginUsage = `Usage: daffy plugins list [--json]
        daffy plugins run bazel [disk] --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
 
+const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--json] [--timeout duration]
+`
+const bazelAliasUsage = `Usage: daffy bazel disk --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
+`
+
 func runPlugins(ctx context.Context, args []string, out, errOut io.Writer, registry *plugins.Registry) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		if _, e := fmt.Fprint(out, pluginUsage); e != nil {

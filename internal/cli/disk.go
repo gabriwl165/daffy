@@ -18,7 +18,7 @@ type diskFormat string
 const (
 	diskFormatText diskFormat = "text"
 	diskFormatJSON diskFormat = "json"
-	diskUsage                 = `Usage: daffy disk scan [path] [--format text|json] [--json] [--exclude PATH]... [--time-budget duration] [--top N]
+	diskUsage                 = `Usage: daffy disk [scan] [path] [--format text|json] [--json] [--exclude PATH]... [--time-budget duration] [--top N]
 Scans eligible local mounts by default. Time budget defaults to 0 (no limit). Recommendations describe observed data; they do not guarantee reclaimable space.`
 	optionDiskFormat  = "format"
 	optionDiskJSON    = "json"
@@ -114,11 +114,10 @@ func runDisk(ctx context.Context, args []string, out, errOut io.Writer, deps Dep
 		fmt.Fprintln(out, diskUsage)
 		return int(exitSuccess)
 	}
-	if len(args) == 0 || command(args[0]) != commandScan {
-		fmt.Fprintln(errOut, diskUsage)
-		return int(exitUsage)
+	if len(args) > 0 && command(args[0]) == commandScan {
+		args = args[1:]
 	}
-	for _, a := range args[1:] {
+	for _, a := range args {
 		if a == "--" {
 			break
 		}
@@ -127,7 +126,7 @@ func runDisk(ctx context.Context, args []string, out, errOut io.Writer, deps Dep
 			return int(exitSuccess)
 		}
 	}
-	paths, o, e := diskFlags(args[1:])
+	paths, o, e := diskFlags(args)
 	if e != nil {
 		fmt.Fprintf(errOut, "%v\n%s\n", e, diskUsage)
 		return int(exitUsage)

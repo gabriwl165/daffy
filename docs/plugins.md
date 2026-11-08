@@ -6,15 +6,19 @@ as part of the default health scan. The first built-ins are Docker and Bazel.
 ```sh
 daffy plugins list
 daffy plugins list --json
-daffy plugins run docker
-daffy plugins run docker disk --json
-daffy plugins run docker runtime
-daffy plugins run docker config
-daffy plugins run bazel --path "$HOME/.cache/bazel" --timeout 30s
-daffy plugins run bazel disk --path /selected/output --exclude /selected/output/skip
+daffy docker
+daffy docker disk --json
+daffy docker runtime
+daffy docker config
+daffy bazel --path "$HOME/.cache/bazel" --timeout 30s
+daffy bazel disk --path /selected/output --exclude /selected/output/skip
 ```
 
-Without an operation, `run` selects that plugin's default operations. Docker's
+The longer `daffy plugins run <name>` form remains supported with identical
+behavior. Top-level aliases are explicitly reserved for these built-ins; the
+registry does not automatically create root commands.
+
+Without an operation, the command selects that plugin's default operations. Docker's
 defaults are disk accounting, a runtime snapshot, and container configuration
 checks. Bazel's default is a filesystem-space analysis; an explicit directory is
 required. Daffy never discovers a Bazel cache by starting a Bazel server.
