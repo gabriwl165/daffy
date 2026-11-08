@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./...
+      - name: Check Linux installer and release build
+        run: |
+          sh -n setup.sh scripts/build-release.sh scripts/test-install.sh
+          sh scripts/test-install.sh
+          out=$(mktemp -d)
+          sh scripts/build-release.sh "$out"
+          tar -tzf "$out/daffy_linux_amd64.tar.gz" | grep -qx daffy
+          tar -tzf "$out/daffy_linux_arm64.tar.gz" | grep -qx daffy
+          (cd "$out" && sha256sum -c SHA256SUMS)
+          rm -rf "$out"
+  container-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - base: "22.04"
+            target: ubuntu
+            fixture: ubuntu
+            id: ubuntu
+            adapter: ubuntu
+          - base: "24.04"
+            target: ubuntu
+            fixture: ubuntu
+            id: ubuntu
+            adapter: ubuntu
+          - base: "22.04"
+            target: zorin-fixture
+            fixture: "17"
+            id: zorin
+            adapter: zorin
+          - base: "24.04"
+            target: zorin-fixture
+            fixture: "18"
+            id: zorin
+            adapter: zorin
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build smoke image
+        run: >-
+          docker build --build-arg UBUNTU_VERSION=${{ matrix.base }}
+          --build-arg ZORIN_VERSION=${{ matrix.fixture }}
+          --target ${{ matrix.target }} -t daffy-smoke .
+      - name: Run smoke checks
+        run: >-
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m
+          -e EXPECTED_DISTRO_ID=${{ matrix.id }}
+          -e EXPECTED_DISTRO_ADAPTER=${{ matrix.adapter }}
+          --entrypoint /bin/sh daffy-smoke /usr/local/bin/container-smoke
+  release:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [test, container-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build release assets
+        run: sh scripts/build-release.sh dist
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+      - name: Publish immutable commit release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: build-${{ github.sha }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+            if [ "$is_draft" != true ]; then
+              echo "Published release $TAG already exists; leaving assets unchanged"
+              exit 0
+            fi
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --draft=false --latest --title "$TAG" --notes "Build from commit $GITHUB_SHA"
+          else
+            gh release create "$TAG" dist/* --draft --title "$TAG" --notes "Build from commit $GITHUB_SHA" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --draft=false --latest
+          fi

@@ -1,0 +1,4 @@
+NAME="Zorin OS"
+ID=zorin
+ID_LIKE=ubuntu
+VERSION_ID="18"

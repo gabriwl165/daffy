@@ -1,0 +1,4 @@
+.git
+.github
+bin
+**/*_test.go
