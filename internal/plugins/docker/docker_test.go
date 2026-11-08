@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -115,6 +116,48 @@ func TestRuntimeSamplesRankPeaksAndKeepChurn(t *testing.T) {
 	trend := o.Details.Docker.RuntimeTrend
 	if trend == nil || trend.SampleCount != 2 || len(trend.Containers) != 1 || trend.Containers[0].ID != id2 || !trend.Containers[0].CPUThresholdExceeded {
 		t.Fatalf("trend: %#v", trend)
+	}
+}
+
+func TestRuntimeSampleBoundsNonfiniteAndDefault(t *testing.T) {
+	for _, opts := range []plugins.Options{{Samples: 61}, {Samples: 2, Interval: time.Millisecond}, {Interval: time.Minute + 1}, {RuntimeTop: 101}, {CPUThreshold: math.NaN()}, {CPUThreshold: math.Inf(1)}, {MemoryThreshold: 101}} {
+		if _, err := New(&fakeRunner{}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: opts}); !errors.Is(err, plugins.ErrInvalid) {
+			t.Errorf("opts %#v: %v", opts, err)
+		}
+	}
+	id := strings.Repeat("a", 64)
+	row := func(cpu string) []byte {
+		return []byte(`{"ID":"` + id + `","Name":"x","CPUPerc":"` + cpu + `","MemUsage":"1/2","MemPerc":"20%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	}
+	for _, cpu := range []string{"NaN%", "+Inf%", "-Inf%"} {
+		_, err := New(&fakeRunner{outputs: [][]byte{row(cpu)}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 1}})
+		if err == nil {
+			t.Errorf("accepted %q", cpu)
+		}
+	}
+	got, err := New(&fakeRunner{outputs: [][]byte{row("125%")}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime})
+	if err != nil || got.Details.Docker.RuntimeTrend != nil {
+		t.Fatalf("default snapshot changed: %#v %v", got, err)
+	}
+}
+
+func TestRuntimeTrendCancellationKeepsCompletedSamples(t *testing.T) {
+	id := strings.Repeat("c", 64)
+	line := []byte(`{"ID":"` + id + `","Name":"x","CPUPerc":"125%","MemUsage":"1/2","MemPerc":"20%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	r := runnerFunc(func(ctx context.Context, _ ...string) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return line, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	go func() { time.Sleep(15 * time.Millisecond); cancel() }()
+	out, err := New(r).Analyze(ctx, plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 3, Interval: 100 * time.Millisecond}})
+	if !errors.Is(err, context.Canceled) || out.Details.Docker.RuntimeTrend == nil || out.Details.Docker.RuntimeTrend.SampleCount != 1 {
+		t.Fatalf("partial trend: %#v %v", out, err)
 	}
 }
 func containsArg(args []string, want string) bool {

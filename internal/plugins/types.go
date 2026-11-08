@@ -109,15 +109,6 @@ type DockerDiskUsage struct {
 	Size        string `json:"size"`
 	Reclaimable string `json:"reclaimable"`
 }
-type DockerDiskBreakdown struct {
-	Category string             `json:"category"`
-	Details  []DockerDiskObject `json:"details,omitempty"`
-}
-type DockerDiskObject struct {
-	ID          string `json:"id"`
-	Size        string `json:"size"`
-	Reclaimable bool   `json:"reclaimable"`
-}
 type DockerContainerStats struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`

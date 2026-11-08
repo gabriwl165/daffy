@@ -109,6 +109,29 @@ func TestDockerContainerFlagRejectedForDiskAndBundle(t *testing.T) {
 	}
 }
 
+func TestRuntimeSamplingFlagsAndValidation(t *testing.T) {
+	var got plugins.Request
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationRuntime, true, plugins.SupportedOptions{RuntimeTrends: true}), op(plugins.OperationDisk, false, plugins.SupportedOptions{}), op(plugins.OperationConfig, false, plugins.SupportedOptions{})}}, analyze: func(_ context.Context, r plugins.Request) (plugins.Outcome, error) {
+		got = r
+		return plugins.Outcome{Status: plugins.StatusComplete}, nil
+	}}
+	code, _, err := runFake(t, p, "runtime", "--samples=2", "--interval=100ms", "--runtime-top=3", "--cpu-threshold=125", "--memory-threshold=75")
+	if code != 0 || err != "" || got.Options.Samples != 2 || got.Options.Interval != 100*time.Millisecond || got.Options.RuntimeTop != 3 || got.Options.CPUThreshold != 125 || got.Options.MemoryThreshold != 75 {
+		t.Fatalf("flags code=%d err=%q req=%#v", code, err, got)
+	}
+	for _, args := range [][]string{{"disk", "--samples=2"}, {"config", "--cpu-threshold=10"}, {"--samples=61"}, {"--interval=50ms"}, {"--cpu-threshold=NaN"}, {"--memory-threshold=101"}} {
+		code, _, _ = runFake(t, p, args...)
+		if code == 0 {
+			t.Errorf("accepted %v", args)
+		}
+	}
+	wrong := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginBazel, Operations: []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}}}
+	code, _, _ = runFake(t, wrong, "--samples=2")
+	if code == 0 {
+		t.Fatal("accepted runtime flag on other plugin")
+	}
+}
+
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("writer failed") }
