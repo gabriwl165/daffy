@@ -21,3 +21,17 @@ func TestParseMountInfoMalformed(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestParseMountInfoEscapedBackslashAndInvalidEscape(t *testing.T) {
+	line := "36 25 0:32 /root\\134name /mnt/space\\040tab\\011line\\012end rw - ext4 /dev/disk\\134x rw\n"
+	ms, e := ParseMountInfo(strings.NewReader(line))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if ms[0].Root != "/root\\name" || ms[0].Path != "/mnt/space tab\tline\nend" || ms[0].Source != "/dev/disk\\x" {
+		t.Fatalf("decoded mount: %#v", ms[0])
+	}
+	if _, e = ParseMountInfo(strings.NewReader("36 25 0:32 / /mnt\\999 rw - ext4 /dev/a rw\n")); e == nil {
+		t.Fatal("malformed escape accepted")
+	}
+}
