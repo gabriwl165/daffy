@@ -56,6 +56,21 @@ an unreachable daemon, and unsupported operations with fixed diagnostic text.
 Classification is best-effort; unfamiliar or localized errors remain generic.
 Raw stderr is used only for bounded internal classification, never emitted.
 
+Use an explicit context to keep daemon selection visible, or select containers
+by exact name or an unambiguous ID prefix of at least 12 characters:
+
+```sh
+daffy docker config --context default --container web --container worker
+daffy plugins run docker runtime --container web --json
+```
+
+Container selection requires an explicit `config` or `runtime` operation; disk
+accounting remains daemon-wide. Unknown or ambiguous selectors are errors.
+Configuration includes stopped containers, but runtime statistics include only
+running matches. An empty running selection never falls back to all containers.
+The context name is reported without exposing its daemon endpoint; without
+`--context`, Docker's normal CLI/environment selection remains authoritative.
+
 ### Bazel
 
 Supply a local Bazel output/cache directory with `--path`. Daffy reports observed
