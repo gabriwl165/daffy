@@ -9,6 +9,8 @@
 | Optional commands stay bounded and do not require privilege escalation | Integration lane: bounded-output and timeout tests, fake executor, explicit root/SMART gating |
 | Default reports do not export sensitive raw logs | Integration/core lanes: privacy fixtures; orchestrator: live JSON inspection |
 | Commands have consistent human/JSON output and interrupt behavior | CLI lane: injected collector, command routing, output errors, cancellation, and sanitization tests |
+| Disk profiling respects filesystem boundaries and reports partial coverage | Disk lane: mount fixtures, exclusions, cancellation, symlinks, hard links, and bounded issue tests |
+| Disk accounting and cleanup advice are observational, not deletion guarantees | Disk lane: allocation fixtures, hotspot rankings, scoped cleanup rules; orchestrator: controlled-tree JSON smoke test |
 | Plugin bundles select only the requested plugin's default operations and retain partial results | Plugin core lane: registry validation, operation selection, failure, and cancellation tests |
 | Docker analysis uses structured CLI evidence without exposing raw inspection secrets | Docker lane: native-format fixtures, fake runner, malformed/missing evidence, command limits, and privacy tests |
 | Bazel analysis requires an explicit directory and does not invoke Bazel | Bazel lane: invalid-root fixtures, injected scanner configuration, coverage, and cancellation tests |
