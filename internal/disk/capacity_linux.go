@@ -3,7 +3,6 @@
 package disk
 
 import (
-	"os"
 	"syscall"
 )
 
@@ -16,9 +15,6 @@ func capacity(path string) (MountCapacity, error) {
 }
 func metadata(path string) (int64, int64, uint64, uint64, error) {
 	var s syscall.Stat_t
-	if e := os.Lstat(path); e != nil {
-		return 0, 0, 0, 0, e
-	}
 	if e := syscall.Lstat(path, &s); e != nil {
 		return 0, 0, 0, 0, e
 	}
