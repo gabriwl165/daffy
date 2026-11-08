@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	coreUnknown = "unknown"
-	coreOK      = "ok"
-	coreWarn    = "warning"
-	coreCrit    = "critical"
+	coreUnknown = SeverityUnknown
+	coreOK      = SeverityOK
+	coreWarn    = SeverityWarning
+	coreCrit    = SeverityCritical
 )
 
 type coreCPU struct{ total, idle uint64 }
@@ -71,8 +71,8 @@ func collectCore(ctx context.Context, opts Options) Report {
 	if etc == "" {
 		etc = "/etc"
 	}
-	r := Report{SchemaVersion: "1", CollectedAt: started, System: map[string]string{}, Findings: []Finding{}}
-	add := func(id, area, sev, summary string, evidence ...string) {
+	r := Report{SchemaVersion: "1", CollectedAt: started, System: SystemInfo{}, Findings: []Finding{}}
+	add := func(id string, area Area, sev Severity, summary string, evidence ...string) {
 		recommendation := map[string]string{"memory.capacity": "Review memory-heavy applications and available capacity.", "memory.swap": "Review swap configuration and workload memory needs.", "cpu.utilization": "Investigate sustained CPU saturation and competing workloads.", "process.cpu": "Review the listed process CPU consumers.", "thermal.temperature": "Check cooling, airflow, and thermal limits.", "thermal.throttle": "Check cooling and reduce sustained compute load if throttling continues.", "disk.root": "Free space or expand the root filesystem.", "disk.activity": "Correlate I/O activity with application workload.", "pressure.cpu": "Investigate CPU contention and runnable workload.", "pressure.memory": "Investigate memory pressure and reclaim activity.", "pressure.io": "Investigate storage latency and competing I/O."}[id]
 		if sev == coreUnknown {
 			recommendation = "Check that the relevant Linux procfs/sysfs data is mounted and readable."
@@ -80,25 +80,25 @@ func collectCore(ctx context.Context, opts Options) Report {
 		if id == "workload.build" {
 			recommendation = "Reduce concurrent builds or other Java workloads if contention persists."
 		}
-		r.Findings = append(r.Findings, Finding{ID: id, Area: area, Severity: sev, Summary: summary, Evidence: evidence, Recommendation: recommendation, Confidence: map[string]string{coreUnknown: "low", coreOK: "medium", coreWarn: "medium", coreCrit: "high"}[sev]})
+		r.Findings = append(r.Findings, Finding{ID: id, Area: area, Severity: sev, Summary: summary, Evidence: evidence, Recommendation: recommendation, Confidence: map[Severity]Confidence{coreUnknown: ConfidenceLow, coreOK: ConfidenceMedium, coreWarn: ConfidenceMedium, coreCrit: ConfidenceHigh}[sev]})
 	}
 	osRelease, _ := parseOSRelease(filepath.Join(etc, "os-release"))
-	r.System["os"] = osRelease["PRETTY_NAME"]
+	r.System.OS = osRelease["PRETTY_NAME"]
 	adapter := selectDistroAdapter(osRelease["ID"])
-	r.System["distro_id"] = osRelease["ID"]
-	if r.System["distro_id"] == "" {
-		r.System["distro_id"] = coreUnknown
+	r.System.DistroID = osRelease["ID"]
+	if r.System.DistroID == "" {
+		r.System.DistroID = string(coreUnknown)
 	}
-	r.System["distro_adapter"] = adapter.Name()
+	r.System.DistroAdapter = adapter.Name()
 	if version := osRelease["VERSION_ID"]; version != "" {
-		r.System["distro_version"] = version
+		r.System.DistroVersion = version
 	}
-	r.System["kernel"], _ = coreReadTrim(filepath.Join(proc, "sys/kernel/osrelease"))
+	r.System.Kernel, _ = coreReadTrim(filepath.Join(proc, "sys/kernel/osrelease"))
 	if b, err := os.ReadFile(filepath.Join(proc, "cpuinfo")); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
 			k, v, ok := strings.Cut(line, ":")
 			if ok && (strings.TrimSpace(k) == "model name" || strings.TrimSpace(k) == "Hardware") {
-				r.System["cpu_model"] = strings.TrimSpace(v)
+				r.System.CPUModel = strings.TrimSpace(v)
 				break
 			}
 		}

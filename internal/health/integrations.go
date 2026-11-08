@@ -64,16 +64,13 @@ func integrationExec(parent context.Context, timeout time.Duration, name string,
 }
 
 func integrationFinding(id, area, severity, summary string, evidence ...string) Finding {
-	return Finding{ID: id, Area: area, Severity: severity, Summary: summary, Evidence: evidence, Confidence: "medium"}
+	return Finding{ID: id, Area: Area(area), Severity: Severity(severity), Summary: summary, Evidence: evidence, Confidence: ConfidenceMedium}
 }
 
 // Collect augments core procfs/sysfs signals with bounded, read-only system tools.
 func Collect(ctx context.Context, opts Options) Report {
 	started := time.Now()
 	r := CollectCore(ctx, opts)
-	if r.System == nil {
-		r.System = map[string]string{}
-	}
 	var fs []Finding
 	if ctx.Err() == nil {
 		fs = append(fs, integrationJournal(ctx, opts, "--boot", "current")...)

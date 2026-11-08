@@ -193,8 +193,8 @@ func severityRank(s string) int {
 func sortReport(r *health.Report) {
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		a, b := r.Findings[i], r.Findings[j]
-		if severityRank(a.Severity) != severityRank(b.Severity) {
-			return severityRank(a.Severity) < severityRank(b.Severity)
+		if severityRank(string(a.Severity)) != severityRank(string(b.Severity)) {
+			return severityRank(string(a.Severity)) < severityRank(string(b.Severity))
 		}
 		if a.ID != b.ID {
 			return a.ID < b.ID
@@ -218,16 +218,16 @@ func printReport(w io.Writer, r health.Report) error {
 	if _, e := fmt.Fprintf(w, "Daffy system report · %s\n", safe(r.CollectedAt.Format(time.RFC3339))); e != nil {
 		return e
 	}
-	if len(r.System) > 0 {
-		keys := make([]string, 0, len(r.System))
-		for k := range r.System {
-			keys = append(keys, k)
+	for _, item := range []struct{ key, value string }{
+		{"cpu_model", r.System.CPUModel}, {"distro_adapter", r.System.DistroAdapter},
+		{"distro_id", r.System.DistroID}, {"distro_version", r.System.DistroVersion},
+		{"kernel", r.System.Kernel}, {"os", r.System.OS},
+	} {
+		if item.value == "" {
+			continue
 		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if _, e := fmt.Fprintf(w, "%s: %s\n", safe(k), safe(r.System[k])); e != nil {
-				return e
-			}
+		if _, e := fmt.Fprintf(w, "%s: %s\n", safe(item.key), safe(item.value)); e != nil {
+			return e
 		}
 	}
 	if len(r.Findings) == 0 {
@@ -235,11 +235,11 @@ func printReport(w io.Writer, r health.Report) error {
 		return e
 	}
 	for _, f := range r.Findings {
-		if _, e := fmt.Fprintf(w, "\n[%s] %s — %s\n", strings.ToUpper(safe(f.Severity)), safe(f.Area), safe(f.Summary)); e != nil {
+		if _, e := fmt.Fprintf(w, "\n[%s] %s — %s\n", strings.ToUpper(safe(string(f.Severity))), safe(string(f.Area)), safe(f.Summary)); e != nil {
 			return e
 		}
 		if f.Confidence != "" {
-			if _, e := fmt.Fprintf(w, "Confidence: %s\n", safe(f.Confidence)); e != nil {
+			if _, e := fmt.Fprintf(w, "Confidence: %s\n", safe(string(f.Confidence))); e != nil {
 				return e
 			}
 		}

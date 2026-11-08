@@ -5,39 +5,55 @@ import (
 	"strings"
 )
 
-// distroAdapter contains advisory package-manager guidance; collectors stay shared.
-type distroAdapter interface {
-	Name() string
-	Package(tool string) string
+type distroID string
+type distroTool string
+
+const (
+	distroUbuntu distroID = "ubuntu"
+	distroZorin  distroID = "zorin"
+	distroLinux  distroID = "linux"
+)
+
+const (
+	toolJournalctl       distroTool = "journalctl"
+	toolSystemctl        distroTool = "systemctl"
+	toolSystemdAnalyze   distroTool = "systemd-analyze"
+	toolPowerprofilesctl distroTool = "powerprofilesctl"
+	toolSensors          distroTool = "sensors"
+	toolLspci            distroTool = "lspci"
+	toolSmartctl         distroTool = "smartctl"
+)
+
+// distroDescriptor contains advisory package-manager guidance; collectors stay shared.
+type distroDescriptor struct {
+	name     string
+	packages map[distroTool]string
 }
 
-type ubuntuFamily struct{}
+func (d distroDescriptor) Name() string               { return d.name }
+func (d distroDescriptor) Package(tool string) string { return d.packages[distroTool(tool)] }
 
-func (ubuntuFamily) Package(tool string) string {
-	return map[string]string{"journalctl": "systemd", "systemctl": "systemd", "systemd-analyze": "systemd", "powerprofilesctl": "power-profiles-daemon", "sensors": "lm-sensors", "lspci": "pciutils", "smartctl": "smartmontools"}[tool]
+var ubuntuPackages = map[distroTool]string{
+	toolJournalctl: "systemd", toolSystemctl: "systemd", toolSystemdAnalyze: "systemd",
+	toolPowerprofilesctl: "power-profiles-daemon", toolSensors: "lm-sensors",
+	toolLspci: "pciutils", toolSmartctl: "smartmontools",
 }
 
-type ubuntuAdapter struct{ ubuntuFamily }
-
-func (ubuntuAdapter) Name() string { return "ubuntu" }
-
-type zorinAdapter struct{ ubuntuFamily }
-
-func (zorinAdapter) Name() string { return "zorin" }
-
-type linuxAdapter struct{}
-
-func (linuxAdapter) Name() string          { return "linux" }
-func (linuxAdapter) Package(string) string { return "" }
-
-var distroRegistry = map[string]distroAdapter{
-	"ubuntu": ubuntuAdapter{},
-	"zorin":  zorinAdapter{},
+func newUbuntuDescriptor() distroDescriptor {
+	return distroDescriptor{name: string(distroUbuntu), packages: ubuntuPackages}
 }
-var genericDistro distroAdapter = linuxAdapter{}
+func newZorinDescriptor() distroDescriptor {
+	return distroDescriptor{name: string(distroZorin), packages: ubuntuPackages}
+}
 
-func selectDistroAdapter(id string) distroAdapter {
-	if a := distroRegistry[id]; a != nil {
+var distroRegistry = map[string]distroDescriptor{
+	string(distroUbuntu): newUbuntuDescriptor(),
+	string(distroZorin):  newZorinDescriptor(),
+}
+var genericDistro = distroDescriptor{name: string(distroLinux)}
+
+func selectDistroAdapter(id string) distroDescriptor {
+	if a, ok := distroRegistry[id]; ok {
 		return a
 	}
 	return genericDistro

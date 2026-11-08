@@ -153,7 +153,7 @@ func TestSanitization(t *testing.T) {
 		t.Fatalf("multiline/format control not stripped: %q", s)
 	}
 	var j bytes.Buffer
-	_ = json.NewEncoder(&j).Encode(health.Report{System: map[string]string{"x": "\x1b[2J"}})
+	_ = json.NewEncoder(&j).Encode(health.Report{System: health.SystemInfo{OS: "\x1b[2J"}})
 	if !strings.Contains(j.String(), `\u001b`) {
 		t.Fatalf("json control not escaped: %q", j.String())
 	}

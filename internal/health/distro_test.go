@@ -31,17 +31,12 @@ func TestOSReleaseParsingAndSelection(t *testing.T) {
 }
 
 func TestDistroRegistrySupportsAdapter(t *testing.T) {
-	distroRegistry["test-distro"] = testDistroAdapter{}
+	distroRegistry["test-distro"] = distroDescriptor{name: "test"}
 	defer delete(distroRegistry, "test-distro")
 	if selectDistroAdapter("test-distro").Name() != "test" {
 		t.Fatal("registry extension not selected")
 	}
 }
-
-type testDistroAdapter struct{}
-
-func (testDistroAdapter) Name() string          { return "test" }
-func (testDistroAdapter) Package(string) string { return "" }
 
 func TestDistroCollectAndDoctor(t *testing.T) {
 	oldPath := os.Getenv("PATH")
@@ -58,10 +53,10 @@ func TestDistroCollectAndDoctor(t *testing.T) {
 			_ = os.WriteFile(filepath.Join(etc, "os-release"), []byte(tc.data), 0600)
 		}
 		r := CollectCore(context.Background(), Options{EtcRoot: etc, ProcRoot: filepath.Join(d, "proc"), SysRoot: filepath.Join(d, "sys"), SampleInterval: 1})
-		if r.System["distro_adapter"] != tc.want {
+		if r.System.DistroAdapter != tc.want {
 			t.Errorf("%s core metadata: %#v", tc.id, r.System)
 		}
-		if tc.id == "ubuntu" && r.System["distro_version"] != "24.04" {
+		if tc.id == "ubuntu" && r.System.DistroVersion != "24.04" {
 			t.Errorf("version missing: %#v", r.System)
 		}
 		checks := Doctor(context.Background(), Options{EtcRoot: etc})

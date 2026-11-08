@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-type coreAdd func(string, string, string, string, ...string)
+type coreAdd func(string, Area, Severity, string, ...string)
 
 func coreMemory(proc string, add coreAdd) {
 	m, e := coreReadCounters(filepath.Join(proc, "meminfo"))
