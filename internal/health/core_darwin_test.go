@@ -31,6 +31,12 @@ func TestCollectDarwinUsesBoundedSysctlAndKeepsRootFinding(t *testing.T) {
 			}
 			return integrationResult{stdout: []byte("total = 1G used = 512M free = 512M")}
 		}
+		if cfg.Tool == distribution.Tool(macos.DiskExecutable) {
+			if cfg.Timeout != 3*time.Second || len(cfg.Args) != 7 {
+				t.Fatalf("unexpected iostat config: %+v", cfg)
+			}
+			return integrationResult{stdout: []byte("disk0\nKB/t tps MB/s\n1 2 3\n4 5 6\n")}
+		}
 		if cfg.Tool != darwinSysctlCommand || cfg.Timeout != 0 || len(cfg.Args) != 2 || cfg.Args[0] != "-n" {
 			t.Fatalf("unexpected command config: %+v", cfg)
 		}
@@ -51,8 +57,8 @@ func TestCollectDarwinUsesBoundedSysctlAndKeepsRootFinding(t *testing.T) {
 		}
 		return integrationResult{}
 	})
-	if calls != 6 || r.CollectedAt.IsZero() {
-		t.Fatalf("expected six bounded calls and timestamp: %+v", r)
+	if calls != 7 || r.CollectedAt.IsZero() {
+		t.Fatalf("expected seven bounded calls and timestamp: %+v", r)
 	}
 	for _, f := range r.Findings {
 		if f.ID == coreFindingDiskRoot {

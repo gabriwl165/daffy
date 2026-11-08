@@ -43,6 +43,11 @@ func collectDarwinWith(ctx context.Context, opts Options, run integrationExecuto
 		usage, ramErr, swapErr := (macos.MemoryCollector{Runner: darwinDiagnosticRunner{run}}).Collect(ctx, opts.CommandTimeout)
 		samples.Memory, samples.MemoryErr, samples.SwapErr = &usage, ramErr, swapErr
 	}
+	if ctx.Err() == nil {
+		if disk, err := (macos.DiskCollector{Runner: darwinDiagnosticRunner{run}}).Collect(ctx, opts.SampleInterval, opts.CommandTimeout, macos.DiskDefaultDeviceLimit); err == nil {
+			samples.Disk = &disk
+		}
+	}
 	r := darwinReport(kernel, cpu, runtime.GOARCH, memResult, samples)
 	r.CollectedAt = started
 	root := coreRootFilesystemFinding()

@@ -138,8 +138,10 @@ separately. Immediately free memory is not an estimate of all available or
 reclaimable memory, and swap allocation is not swap activity or memory pressure.
 CPU sampling uses two `top` samples
 and rounds the requested interval up to whole seconds; failed samples stay unknown.
-Processes, pressure, thermals, swap activity, and disk activity remain explicitly unknown;
-capacity alone does not establish system health.
+Disk activity uses the second `iostat` interval and reports per-device KB/transfer,
+transfers/second, and MB/second for at most 32 devices. These rates do not establish
+drive health, utilization, or latency. Processes, pressure, thermals, and swap
+activity remain explicitly unknown; capacity alone does not establish system health.
 Linux-only integrations and package recommendations are not run on macOS.
 Windows cross-compiles but has no supported native health or disk provider.
 
