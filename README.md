@@ -132,9 +132,13 @@ and safety limits.
 
 The table below describes Linux coverage. The macOS provider reports
 kernel/CPU identity, sampled system CPU utilization, physical memory capacity,
-and root filesystem capacity when available. CPU sampling uses two `top` samples
+immediately free memory, allocated swap usage, and root filesystem capacity when
+available. RAM page size comes from `vm_stat`; speculative pages are reported
+separately. Immediately free memory is not an estimate of all available or
+reclaimable memory, and swap allocation is not swap activity or memory pressure.
+CPU sampling uses two `top` samples
 and rounds the requested interval up to whole seconds; failed samples stay unknown.
-Processes, swap, pressure, thermals, and disk activity remain explicitly unknown;
+Processes, pressure, thermals, swap activity, and disk activity remain explicitly unknown;
 capacity alone does not establish system health.
 Linux-only integrations and package recommendations are not run on macOS.
 Windows cross-compiles but has no supported native health or disk provider.
