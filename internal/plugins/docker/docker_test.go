@@ -19,6 +19,17 @@ type fakeRunner struct {
 	args    [][]string
 }
 
+type waitingRunner struct{}
+
+func (waitingRunner) Run(ctx context.Context, _ ...string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type runnerFunc func(context.Context, ...string) ([]byte, error)
+
+func (f runnerFunc) Run(ctx context.Context, args ...string) ([]byte, error) { return f(ctx, args...) }
+
 func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 	i := f.calls
 	f.calls++
@@ -126,6 +137,55 @@ func TestAnalyzePreservesCommandDeadline(t *testing.T) {
 	_, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("command deadline lost: %v", err)
+	}
+}
+
+func TestDockerTimeoutIssueUsesSafeCommandIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	o, err := New(waitingRunner{}).Analyze(ctx, plugins.Request{Operation: plugins.OperationConfig})
+	if !errors.Is(err, context.DeadlineExceeded) || len(o.Issues) != 1 || o.Issues[0].Code != plugins.IssueTimedOut || o.Issues[0].Command != "docker ps" {
+		t.Fatalf("timeout outcome=%+v err=%v", o, err)
+	}
+	if strings.Contains(o.Issues[0].Summary, "container") || strings.Contains(o.Issues[0].Summary, "secret") || strings.Contains(o.Issues[0].Summary, "--format") {
+		t.Fatalf("unsafe timeout details: %+v", o.Issues[0])
+	}
+}
+
+func TestDockerConfigPsTimeoutIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	o, err := New(waitingRunner{}).Analyze(ctx, plugins.Request{Operation: plugins.OperationConfig})
+	if !errors.Is(err, context.DeadlineExceeded) || len(o.Issues) != 1 || o.Issues[0].Command != "docker ps" || !strings.Contains(o.Issues[0].Summary, "docker ps timed out") || strings.Contains(o.Issues[0].Summary, "inspect") {
+		t.Fatalf("config ps timeout outcome=%+v err=%v", o, err)
+	}
+}
+
+func TestDockerConfigInspectTimeoutStopsLaterBatches(t *testing.T) {
+	ids := make([]string, 101)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%064x", i+1)
+	}
+	calls := 0
+	runner := runnerFunc(func(_ context.Context, args ...string) ([]byte, error) {
+		calls++
+		if args[0] == "ps" {
+			return []byte(strings.Join(ids, "\n")), nil
+		}
+		if calls == 2 {
+			return []byte("[]"), nil
+		}
+		return nil, context.DeadlineExceeded
+	})
+	o, err := New(runner).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+	found := false
+	for _, issue := range o.Issues {
+		if issue.Command == "docker inspect" {
+			found = true
+		}
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 3 || !found {
+		t.Fatalf("calls=%d issues=%+v err=%v", calls, o.Issues, err)
 	}
 }
 

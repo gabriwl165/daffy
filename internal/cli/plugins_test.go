@@ -122,6 +122,53 @@ func TestPluginTimeoutIsPerBundleOperation(t *testing.T) {
 	}
 }
 
+func TestPluginTimeoutDiagnosticsTextJSONAndAlias(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"explicit text", []string{"plugins", "run", "docker", "disk", "--timeout=2ms"}},
+		{"default alias JSON", []string{"docker", "--timeout=2ms", "--json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{}), op(plugins.OperationRuntime, true, plugins.SupportedOptions{}), op(plugins.OperationConfig, true, plugins.SupportedOptions{})}
+			p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: ops}, analyze: func(ctx context.Context, req plugins.Request) (plugins.Outcome, error) {
+				if req.Operation == plugins.OperationDisk {
+					<-ctx.Done()
+					return plugins.Outcome{}, ctx.Err()
+				}
+				return plugins.Outcome{Status: plugins.StatusComplete}, nil
+			}}
+			var out, stderr bytes.Buffer
+			code := Run(context.Background(), RunConfig{Args: tc.args, Out: &out, ErrOut: &stderr, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+			wantCalls, summary := 1, "1 of 1 plugin operations timed out"
+			if strings.HasPrefix(tc.name, "default") {
+				wantCalls, summary = 3, "1 of 3 plugin operations timed out"
+			}
+			if code != 1 || len(p.calls) != wantCalls || !strings.Contains(out.String(), "timed out") || strings.Contains(out.String(), "skipped") || !strings.Contains(stderr.String(), summary) {
+				t.Fatalf("code=%d calls=%v out=%q stderr=%q", code, p.calls, out.String(), stderr.String())
+			}
+			if strings.Contains(strings.Join(tc.args, " "), "--json") && !strings.Contains(out.String(), `"code":"timed-out"`) {
+				t.Fatalf("JSON missing typed timeout: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestParentDeadlineWithSkippedOperationExitsFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: "third", Operations: []plugins.Operation{op("first", true, plugins.SupportedOptions{}), op("second", true, plugins.SupportedOptions{})}}, analyze: func(ctx context.Context, _ plugins.Request) (plugins.Outcome, error) {
+		<-ctx.Done()
+		return plugins.Outcome{}, ctx.Err()
+	}}
+	var out, stderr bytes.Buffer
+	code := Run(ctx, RunConfig{Args: []string{"plugins", "run", "third"}, Out: &out, ErrOut: &stderr, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+	if code != 1 || !strings.Contains(out.String(), "skipped because parent deadline expired") {
+		t.Fatalf("code=%d calls=%v out=%q stderr=%q", code, p.calls, out.String(), stderr.String())
+	}
+}
+
 func cancelledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,7 +128,7 @@ func TestRunCancellationMarksRemaining(t *testing.T) {
 	}}
 	r, _ := NewRegistry(p)
 	report, err := r.Run(ctx, PluginDocker, Request{})
-	if err == nil || len(p.calls) != 1 || len(report.Outcomes) != 2 || report.Outcomes[0].Status != StatusCancelled || report.Outcomes[1].Status != StatusCancelled {
+	if err == nil || len(p.calls) != 1 || len(report.Outcomes) != 2 || report.Outcomes[0].Status != StatusCancelled || report.Outcomes[1].Status != StatusCancelled || len(report.Outcomes[1].Issues) != 1 || report.Outcomes[1].Issues[0].Code != IssueSkipped {
 		t.Fatalf("calls %v report %+v err %v", p.calls, report, err)
 	}
 }
@@ -151,6 +152,9 @@ func TestRunWithTimeoutIsPerOperationAndParentCancellationWins(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || len(p.calls) != 2 || report.Outcomes[0].Status != StatusCancelled || report.Outcomes[1].Status != StatusComplete || len(seen) != 2 || seen[1] < 10*time.Millisecond {
 		t.Fatalf("calls=%v budgets=%v report=%+v err=%v", p.calls, seen, report, err)
 	}
+	if !strings.Contains(err.Error(), "1 of 2") {
+		t.Fatalf("timeout summary not deduplicated: %v", err)
+	}
 	one := &testPlugin{id: PluginDocker, ops: []Operation{op(OperationDisk, true)}, analyze: func(ctx context.Context, _ Request) (Outcome, error) {
 		<-ctx.Done()
 		return Outcome{}, ctx.Err()
@@ -164,6 +168,95 @@ func TestRunWithTimeoutIsPerOperationAndParentCancellationWins(t *testing.T) {
 	p.calls = nil
 	if _, err := r.RunWithTimeout(ctx, PluginDocker, Request{}, time.Second); !errors.Is(err, context.Canceled) || len(p.calls) != 0 {
 		t.Fatalf("parent cancellation err=%v calls=%v", err, p.calls)
+	}
+}
+
+func TestTimeoutSummaryPreservesIndependentFailuresAndLaterCancellation(t *testing.T) {
+	want := errors.New("independent failure")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := &testPlugin{id: PluginDocker, ops: []Operation{op("one", true), op("two", true), op("three", true), op("four", true), op("five", true)}, analyze: func(opctx context.Context, req Request) (Outcome, error) {
+		switch req.Operation {
+		case "one":
+			<-opctx.Done()
+			return Outcome{}, opctx.Err()
+		case "two":
+			<-opctx.Done()
+			return Outcome{}, opctx.Err()
+		case "three":
+			return Outcome{}, want
+		case "four":
+			cancel()
+			return Outcome{}, context.Canceled
+		default:
+			return Outcome{}, errors.New("must be skipped")
+		}
+	}}
+	r, _ := NewRegistry(p)
+	report, err := r.RunWithTimeout(ctx, PluginDocker, Request{}, 2*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, want) || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "2 of 5") {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	if len(report.Outcomes) != 5 || report.Outcomes[4].Issues[0].Code != IssueSkipped {
+		t.Fatalf("outcomes=%+v", report.Outcomes)
+	}
+}
+
+func TestParentDeadlineSkipsRemainingOperations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	p := &testPlugin{id: PluginDocker, ops: []Operation{op(OperationDisk, true), op(OperationRuntime, true)}, analyze: func(ctx context.Context, _ Request) (Outcome, error) {
+		<-ctx.Done()
+		return Outcome{}, ctx.Err()
+	}}
+	r, _ := NewRegistry(p)
+	report, err := r.Run(ctx, PluginDocker, Request{})
+	if !errors.Is(err, context.DeadlineExceeded) || len(p.calls) != 1 || report.Outcomes[1].Issues[0].Code != IssueSkipped {
+		t.Fatalf("report=%+v calls=%v err=%v", report, p.calls, err)
+	}
+}
+
+type wrapperIdentity struct {
+	cause error
+	label string
+}
+
+func (e *wrapperIdentity) Error() string {
+	return "wrapped diagnostic: " + e.label + ": " + e.cause.Error()
+}
+func (e *wrapperIdentity) Unwrap() error { return e.cause }
+
+func TestAggregatedTimeoutPreservesWrappedErrorsAndIdentity(t *testing.T) {
+	want := errors.New("additional failure detail")
+	wrapper := &wrapperIdentity{cause: errors.Join(context.DeadlineExceeded, want), label: "important"}
+	p := &testPlugin{id: PluginDocker, ops: []Operation{op(OperationDisk, true)}, analyze: func(context.Context, Request) (Outcome, error) { return Outcome{}, wrapper }}
+	r, _ := NewRegistry(p)
+	_, err := r.Run(context.Background(), PluginDocker, Request{})
+	var got *wrapperIdentity
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, want) || !errors.As(err, &got) || got != wrapper || !strings.Contains(err.Error(), wrapper.Error()) || !strings.Contains(err.Error(), want.Error()) {
+		t.Fatalf("identity/message lost: %v", err)
+	}
+}
+
+func TestMismatchedPluginAndParentContextErrorsAreBothPreserved(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &testPlugin{id: PluginDocker, ops: []Operation{op(OperationDisk, true)}, analyze: func(_ context.Context, _ Request) (Outcome, error) {
+		cancel()
+		return Outcome{}, context.DeadlineExceeded
+	}}
+	r, _ := NewRegistry(p)
+	_, err := r.Run(ctx, PluginDocker, Request{})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost one context identity: %v", err)
+	}
+}
+
+func TestStandalonePluginCancellationHasDiagnostic(t *testing.T) {
+	p := &testPlugin{id: PluginDocker, ops: []Operation{op(OperationDisk, true)}, analyze: func(context.Context, Request) (Outcome, error) { return Outcome{}, context.Canceled }}
+	r, _ := NewRegistry(p)
+	report, err := r.Run(context.Background(), PluginDocker, Request{})
+	if !errors.Is(err, context.Canceled) || len(report.Outcomes[0].Issues) != 1 || report.Outcomes[0].Issues[0].Code != IssueCancelled {
+		t.Fatalf("report=%+v err=%v", report, err)
 	}
 }
 
