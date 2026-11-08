@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gabriwl165/daffy/internal/disk"
 )
@@ -26,6 +28,37 @@ func TestDiskFlags(t *testing.T) {
 		if _, _, e := diskFlags(a); e == nil {
 			t.Errorf("accepted %v", a)
 		}
+	}
+}
+
+func TestDiskProgressIntegration(t *testing.T) {
+	var saw bool
+	d := Deps{Disk: diskFunc(func(_ context.Context, c disk.Config) (disk.Report, error) {
+		if c.OnProgress == nil {
+			if saw {
+				t.Fatal("callback changed")
+			}
+			return disk.Report{}, nil
+		}
+		saw = true
+		c.OnProgress(disk.Progress{Elapsed: time.Second, Files: 3, Directories: 2, CurrentPath: "/tmp\x1b"})
+		return disk.Report{Root: "/"}, nil
+	})}
+	var out, errout bytes.Buffer
+	if c := Run(context.Background(), RunConfig{Args: []string{"disk", "--json"}, Out: &out, ErrOut: &errout, Deps: d}); c != 0 || saw || errout.Len() != 0 {
+		t.Fatalf("default: %d %v %q", c, saw, errout.String())
+	}
+	out.Reset()
+	errout.Reset()
+	if c := Run(context.Background(), RunConfig{Args: []string{"disk", "--json", "--progress"}, Out: &out, ErrOut: &errout, Deps: d}); c != 0 || !saw || !json.Valid(bytes.TrimSpace(out.Bytes())) || !strings.Contains(errout.String(), "files=3") || strings.Contains(errout.String(), "\x1b") {
+		t.Fatalf("progress: %d %q %q", c, out.String(), errout.String())
+	}
+	d.Disk = diskFunc(func(_ context.Context, c disk.Config) (disk.Report, error) {
+		c.OnProgress(disk.Progress{Elapsed: time.Second, CurrentPath: "/x"})
+		return disk.Report{}, nil
+	})
+	if c := Run(context.Background(), RunConfig{Args: []string{"disk", "--json", "--progress"}, Out: &out, ErrOut: shortWriter{}, Deps: d}); c != 1 {
+		t.Fatalf("writer failure exit %d", c)
 	}
 }
 
@@ -103,5 +136,58 @@ func TestDiskTextSanitizationAndSizes(t *testing.T) {
 	}
 	if strings.ContainsAny(b.String(), "\x1b") || strings.Contains(b.String(), "safe\nreason") || !strings.Contains(b.String(), "1.0 KiB") {
 		t.Fatalf("unsafe/poor output %q", b.String())
+	}
+}
+
+func TestDiskTextLayoutDiagnosticsAndBounds(t *testing.T) {
+	var b bytes.Buffer
+	r := disk.Report{Root: "/root", Coverage: disk.Coverage{Mounts: 2, ScannedMounts: 2, SkippedMounts: 1, Complete: true}, Mounts: []disk.MountCapacity{{Path: "/m\n\x1b", TotalBytes: 100, AvailableBytes: 25, TotalInodes: 100, FreeInodes: 0}, {Path: "/zero", TotalBytes: 0, AvailableBytes: 0}, {Path: "/bad", TotalBytes: 10, AvailableBytes: 20}}, TopFiles: []disk.FileEntry{{Path: "/f\r\x1b", AllocatedBytes: 5}, {Path: "/g", AllocatedBytes: 9}}, Issues: []disk.Issue{{Path: "/p\n", Operation: "read-dir\x1b", Error: "denied\r\x1b"}}}
+	if err := printDisk(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{"75% used) [#########---]", "0% free", "capacity unknown", "DIAGNOSTICS", "read-dir /p: denied", "Bar shows used space", "snapshots, shared blocks"} {
+		if !strings.Contains(strings.ToLower(out), strings.ToLower(want)) {
+			t.Errorf("missing %q in %q", want, out)
+		}
+	}
+	if strings.ContainsAny(out, "\x1b\r") || strings.Contains(out, "Results are partial") || !strings.Contains(out, "  #  SIZE") || !strings.Contains(out, "2 ") {
+		t.Fatalf("layout/sanitization: %q", out)
+	}
+	if got := bytesTextU(^uint64(0)); !strings.Contains(got, "EiB") {
+		t.Fatalf("uint64 maximum clamped: %s", got)
+	}
+	if percent(0, 0, false) != "unknown" || bar(0, 0, false) != "[ capacity unknown ]" || percent(0, 10, false) != "unknown" {
+		t.Fatal("invalid capacity presented as valid")
+	}
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return 0, errors.New("write failed") }
+func TestPrintDiskWriterFailure(t *testing.T) {
+	if printDisk(shortWriter{}, disk.Report{}) == nil {
+		t.Fatal("expected short write failure")
+	}
+}
+
+func TestDiskDiagnosticLocationsAndInvalidInodes(t *testing.T) {
+	r := disk.Report{Coverage: disk.Coverage{Complete: true}, Mounts: []disk.MountCapacity{
+		{Path: "/critical\x1b", TotalBytes: 100, AvailableBytes: 1, TotalInodes: 10, FreeInodes: 20},
+		{Path: "/other\nmount", TotalBytes: 100, AvailableBytes: 2, TotalInodes: 10, FreeInodes: 10},
+	}}
+	var out bytes.Buffer
+	if err := printDisk(&out, r); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if strings.ContainsAny(s, "\x1b\r") || !strings.Contains(s, "/critical") || !strings.Contains(s, "/othermount") {
+		t.Fatalf("diagnostic locations missing/unsafe: %q", s)
+	}
+	if strings.Contains(s, "20% free") || strings.Contains(s, "200% free") {
+		t.Fatalf("invalid inode count presented as valid: %q", s)
+	}
+	if strings.Index(s, "DIAGNOSTICS") > strings.Index(s, "LARGEST FILES") {
+		t.Fatalf("findings should precede rankings: %q", s)
 	}
 }

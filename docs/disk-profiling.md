@@ -4,6 +4,33 @@ Disk profiling is a separate, explicitly requested operation. It does not add a
 filesystem traversal to the existing health scan, and it never deletes files or
 runs cleanup commands.
 
+## Reading the CLI report
+
+```sh
+daffy disk "$HOME" --progress
+daffy disk /var --top 10 --time-budget 30s
+daffy disk "$HOME" --json --progress > disk-report.json
+```
+
+Text output separates coverage, diagnostic findings, filesystem capacity, ranked
+files/directories, recommendations, and scan issues. Capacity bars are accompanied
+by numeric percentages; color and an interactive terminal are not required.
+Rankings use allocated bytes. Parent and child directory sizes overlap and must
+not be added together. Capacity remains filesystem-wide even for a selected path.
+
+`--progress` is optional and writes counters and the current directory only to
+stderr, at most once per second after the first second. It does not promise an
+ETA or a percentage of the tree: the total entry count is unknown until scanning
+finishes. Without the flag, JSON mode stays silent on stderr during successful
+scans. The JSON schema and partial-report/exit-code behavior are unchanged.
+
+Start with capacity and inode warnings, then inspect coverage before interpreting
+the rankings. To investigate a hotspot, rerun the command with that directory as
+the path. If filesystem consumption is not explained by the scan, consider
+permissions, deleted-but-open files, snapshots, shared blocks, reserved space,
+and metadata; these are possible explanations, not diagnoses established by a
+directory walk. No extra privileged checks or cleanup commands run automatically.
+
 ## Scope and safety
 
 With no path, the profiler discovers eligible local filesystems in the current
