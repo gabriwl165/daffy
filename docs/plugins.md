@@ -73,6 +73,14 @@ An independent operation failure does not discard successful results from other
 operations. Interrupting the command stops further collection; unavailable and
 incomplete outcomes remain visible.
 
+Timeout diagnostics distinguish a check that ran out of time from a check that
+was never started because the parent command was cancelled or its deadline
+expired. Docker timeout issues identify the read-only command without exposing
+container arguments or raw stderr. JSON timeout issues add `elapsed_ms` and,
+when available, `command`; operation statuses and schema version remain unchanged.
+The final error summarizes timeouts rather than repeating the same context error
+for every affected check.
+
 Text is the default; `--json` emits a versioned report with typed operation
 details. Findings do not cause a nonzero exit status. Partial reports (including
 filesystem coverage gaps) and execution failures exit 1,

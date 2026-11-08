@@ -139,6 +139,14 @@ func (r *CommandRunner) Run(ctx context.Context, args ...string) ([]byte, error)
 
 type Plugin struct{ runner Runner }
 
+type commandTimeoutError struct {
+	command string
+	err     error
+}
+
+func (e *commandTimeoutError) Error() string { return e.command + " timed out" }
+func (e *commandTimeoutError) Unwrap() error { return e.err }
+
 func New(r Runner) *Plugin {
 	if r == nil {
 		r = NewCommandRunner()
@@ -154,6 +162,7 @@ func (p *Plugin) Describe() plugins.Descriptor {
 }
 
 func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outcome, error) {
+	started := time.Now()
 	o := plugins.Outcome{Operation: req.Operation, Status: plugins.StatusComplete}
 	if p == nil || p.runner == nil {
 		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusUnavailable}, ErrUnavailable
@@ -179,6 +188,11 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 		err = p.config(ctx, d, &o)
 	}
 	if err != nil {
+		var timeoutErr *commandTimeoutError
+		if errors.As(err, &timeoutErr) {
+			elapsed := time.Since(started)
+			o.Issues = append(o.Issues, plugins.Issue{Code: plugins.IssueTimedOut, Summary: fmt.Sprintf("%s timed out after %s", timeoutErr.command, elapsed.Round(time.Millisecond)), ElapsedMS: elapsed.Milliseconds(), Command: timeoutErr.command})
+		}
 		if ctx.Err() != nil {
 			o.Status = plugins.StatusCancelled
 		} else if o.Status != plugins.StatusUnavailable {
@@ -189,13 +203,19 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	return o, nil
 }
 
-func (p *Plugin) call(ctx context.Context, args ...string) ([]byte, error) {
+func (p *Plugin) call(ctx context.Context, command string, args ...string) ([]byte, error) {
 	b, e := p.runner.Run(ctx, args...)
 	if e != nil {
 		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, &commandTimeoutError{command: command, err: ctx.Err()}
+			}
 			return nil, ctx.Err()
 		}
-		if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+		if errors.Is(e, context.DeadlineExceeded) {
+			return nil, &commandTimeoutError{command: command, err: e}
+		}
+		if errors.Is(e, context.Canceled) {
 			return nil, e
 		}
 		if errors.Is(e, ErrCommandFailed) || errors.Is(e, ErrOutputLimit) || errors.Is(e, ErrUnavailable) {
@@ -209,10 +229,16 @@ func fail(o *plugins.Outcome, code string) {
 	o.Issues = append(o.Issues, plugins.Issue{Code: code, Summary: "Docker data could not be read or validated"})
 	o.Status = plugins.StatusPartial
 }
+func failCommand(o *plugins.Outcome, code string, err error) {
+	var timeoutErr *commandTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		fail(o, code)
+	}
+}
 func (p *Plugin) disk(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
-	b, e := p.call(ctx, "system", "df", "--format", "{{json .}}")
+	b, e := p.call(ctx, "docker system df", "system", "df", "--format", "{{json .}}")
 	if e != nil {
-		fail(o, issueDiskUnavailable)
+		failCommand(o, issueDiskUnavailable, e)
 		return e
 	}
 	rows, e := decodeLines[diskRow](b)
@@ -250,9 +276,9 @@ type diskRow struct {
 }
 
 func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
-	b, e := p.call(ctx, "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}")
+	b, e := p.call(ctx, "docker stats", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}")
 	if e != nil {
-		fail(o, issueRuntimeUnavailable)
+		failCommand(o, issueRuntimeUnavailable, e)
 		return e
 	}
 	rows, e := decodeLines[statsRow](b)
@@ -286,9 +312,9 @@ var fullID = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 func validID(s string) bool { return fullID.MatchString(s) }
 func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
-	b, e := p.call(ctx, "ps", "--all", "--quiet", "--no-trunc")
+	b, e := p.call(ctx, "docker ps", "ps", "--all", "--quiet", "--no-trunc")
 	if e != nil {
-		fail(o, issueListUnavailable)
+		failCommand(o, issueListUnavailable, e)
 		return e
 	}
 	ids := strings.Fields(string(b))
@@ -311,10 +337,13 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 		if end > len(ids) {
 			end = len(ids)
 		}
-		out, err := p.call(ctx, append([]string{"container", "inspect"}, ids[i:end]...)...)
+		out, err := p.call(ctx, "docker inspect", append([]string{"container", "inspect"}, ids[i:end]...)...)
 		if err != nil {
-			fail(o, issueInspectUnavailable)
+			failCommand(o, issueInspectUnavailable, err)
 			aggregate = errors.Join(aggregate, err)
+			if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				return errors.Join(aggregate, ctx.Err())
+			}
 			continue
 		}
 		var raw []inspectContainer

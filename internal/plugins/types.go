@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 	"unicode"
 
@@ -32,6 +33,8 @@ const (
 	SchemaVersion                    = "1"
 	IssueExecutionFailed             = "execution-failed"
 	IssueCancelled                   = "cancelled"
+	IssueTimedOut                    = "timed-out"
+	IssueSkipped                     = "skipped-cancelled"
 	AccessOffline        Access      = "offline"
 	AccessFilesystem     Access      = "filesystem-read"
 	AccessDaemonRead     Access      = "daemon-read"
@@ -82,8 +85,10 @@ type Finding struct {
 	Recommendation string   `json:"recommendation,omitempty"`
 }
 type Issue struct {
-	Code    string `json:"code"`
-	Summary string `json:"summary"`
+	Code      string `json:"code"`
+	Summary   string `json:"summary"`
+	ElapsedMS int64  `json:"elapsed_ms,omitempty"`
+	Command   string `json:"command,omitempty"`
 }
 type DockerDiskUsage struct {
 	Category    string `json:"category"`
@@ -262,6 +267,12 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 		return report, fmt.Errorf("%w: no default operations", ErrInvalid)
 	}
 	var failures []error
+	var timedOut int
+	addFailure := func(err error) {
+		if err != nil {
+			failures = append(failures, err)
+		}
+	}
 	for _, op := range selected {
 		opts := req.Options
 		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || (op.Options.RequirePath && opts.Path == "") {
@@ -270,8 +281,12 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 	}
 	for _, op := range selected {
 		if err := ctx.Err(); err != nil {
-			report.Outcomes = append(report.Outcomes, Outcome{Operation: op.ID, Status: StatusCancelled, Issues: []Issue{{Code: IssueCancelled, Summary: err.Error()}}})
-			failures = append(failures, err)
+			summary := "skipped because parent context was cancelled"
+			if errors.Is(err, context.DeadlineExceeded) {
+				summary = "skipped because parent deadline expired"
+			}
+			report.Outcomes = append(report.Outcomes, Outcome{Operation: op.ID, Status: StatusCancelled, Issues: []Issue{{Code: IssueSkipped, Summary: summary}}})
+			addFailure(err)
 			continue
 		}
 		opCtx := ctx
@@ -279,24 +294,59 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 		if timeout > 0 {
 			opCtx, cancel = context.WithTimeout(ctx, timeout)
 		}
+		started := time.Now()
 		outcome, err := e.plugin.Analyze(opCtx, Request{Operation: op.ID, Options: req.Options})
+		elapsed := time.Since(started)
 		opErr := opCtx.Err()
 		cancel()
 		outcome.Operation = op.ID
-		if opErr != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		if opErr != nil && !errors.Is(err, opErr) {
 			err = errors.Join(err, opErr)
 		}
+		operationTimedOut := errors.Is(opErr, context.DeadlineExceeded) && ctx.Err() == nil
+		runnerTimedOut := errors.Is(err, context.DeadlineExceeded) && opErr == nil && ctx.Err() == nil
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if operationTimedOut || runnerTimedOut {
 				outcome.Status = StatusCancelled
-				outcome.Issues = append(outcome.Issues, Issue{Code: IssueCancelled, Summary: err.Error()})
+				timedOut++
+				for i := range outcome.Issues {
+					if outcome.Issues[i].Code == IssueTimedOut && operationTimedOut {
+						outcome.Issues[i].Summary += "; increase --timeout above its current value"
+					}
+				}
+				if !hasIssue(outcome.Issues, IssueTimedOut) {
+					summary := fmt.Sprintf("operation timed out after %s", elapsed.Round(time.Millisecond))
+					if operationTimedOut {
+						summary += "; increase --timeout above its current value"
+					}
+					outcome.Issues = append(outcome.Issues, Issue{Code: IssueTimedOut, Summary: summary, ElapsedMS: elapsed.Milliseconds()})
+				}
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				outcome.Status = StatusCancelled
+				if ctx.Err() != nil {
+					filtered := outcome.Issues[:0]
+					for _, issue := range outcome.Issues {
+						if issue.Code != IssueTimedOut {
+							filtered = append(filtered, issue)
+						}
+					}
+					outcome.Issues = filtered
+					summary := "operation stopped because parent context was cancelled"
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						summary = "operation stopped because parent deadline expired"
+					}
+					outcome.Issues = append(outcome.Issues, Issue{Code: IssueCancelled, Summary: summary})
+				}
+				if ctx.Err() == nil && errors.Is(err, context.Canceled) && !hasIssue(outcome.Issues, IssueCancelled) {
+					outcome.Issues = append(outcome.Issues, Issue{Code: IssueCancelled, Summary: "operation was cancelled"})
+				}
 			} else {
 				if outcome.Status != StatusUnavailable {
 					outcome.Status = StatusPartial
 				}
 				outcome.Issues = append(outcome.Issues, Issue{Code: IssueExecutionFailed, Summary: err.Error()})
 			}
-			failures = append(failures, err)
+			addFailure(err)
 		} else if outcome.Status == "" {
 			outcome.Status = StatusComplete
 		}
@@ -311,5 +361,53 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 			}
 		}
 	}
-	return report, errors.Join(failures...)
+	if timedOut > 0 {
+		return report, &runErrors{timedOut: timedOut, total: len(selected), errs: failures}
+	}
+	if len(failures) == 0 {
+		return report, nil
+	}
+	return report, &runErrors{errs: failures}
+}
+
+type runErrors struct {
+	timedOut, total int
+	errs            []error
+}
+
+func (e *runErrors) Unwrap() []error { return e.errs }
+func (e *runErrors) Error() string {
+	parts := make([]string, 0, len(e.errs)+1)
+	if e.timedOut > 0 {
+		parts = append(parts, fmt.Sprintf("%d of %d plugin operations timed out", e.timedOut, e.total))
+	}
+	seenCanceled, seenDeadline := false, false
+	for _, err := range e.errs {
+		if err == context.DeadlineExceeded && e.timedOut > 0 {
+			continue
+		}
+		if err == context.Canceled {
+			if seenCanceled {
+				continue
+			}
+			seenCanceled = true
+		}
+		if err == context.DeadlineExceeded {
+			if seenDeadline {
+				continue
+			}
+			seenDeadline = true
+		}
+		parts = append(parts, err.Error())
+	}
+	return strings.Join(parts, ": ")
+}
+
+func hasIssue(issues []Issue, code string) bool {
+	for _, issue := range issues {
+		if issue.Code == code {
+			return true
+		}
+	}
+	return false
 }
