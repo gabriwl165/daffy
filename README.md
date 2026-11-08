@@ -1,7 +1,8 @@
 # Daffy
 
-A read-only system health CLI, written in Go. Investigate overheating, freezes,
+A system health CLI with read-only diagnostics, written in Go. Investigate overheating, freezes,
 resource contention, and slow boots without applying speculative “optimizations.”
+Explicit `kill` commands additionally provide process control on Linux and macOS.
 Designed for Zorin OS and Ubuntu; other Linux distributions may expose fewer checks.
 macOS support covers Intel and Apple Silicon and exposes fewer signals than Linux.
 
@@ -77,6 +78,8 @@ daffy docker disk                  # Docker disk accounting only
 daffy docker runtime               # Docker runtime snapshot
 daffy docker config                # Docker configuration checks
 daffy bazel --path DIR              # Inspect an explicit output/cache directory
+daffy kill port 8080               # Send SIGTERM to the sole TCP listener owner
+daffy kill pid 12845               # Send SIGTERM to a specific PID (>1)
 daffy --help
 daffy --version
 ```
@@ -84,6 +87,12 @@ daffy --version
 `--sample 1s` controls the utilization sampling window. `--timeout 3s` bounds
 each optional external command, not the entire scan. A scan may take longer
 than the watch interval; watch must not overlap scans. Stop with Ctrl-C.
+
+`kill` is explicit process control, not a diagnostic. It refuses ambiguous port
+owners and incomplete discovery, never invokes `sudo`, and does not escalate to
+SIGKILL. Success means a signal was sent, not that the process exited. macOS port
+lookup requires `lsof`. See [process control](docs/process-control.md) for platform
+behavior, safety checks, and remaining PID-reuse race limitations.
 
 Completed scans exit 0 even when they contain critical findings: this is a
 diagnostic tool, not a pass/fail health gate. Execution failures exit 1; invalid
@@ -176,7 +185,8 @@ means adding an adapter to the registry, not branching inside shared collectors.
 
 ## Safety and privacy
 
-- No stress tests, process killing, automatic repairs, package installation,
+- Diagnostics never kill processes. Process signalling requires an explicit `kill` command.
+- No stress tests, automatic repairs, package installation,
   fan changes, privilege escalation, or system-setting changes.
 - Basic scans need no root access. `--privileged` opts into additional checks
   such as SMART **only when already running as root**; it never invokes sudo.
