@@ -176,9 +176,9 @@ func New(r Runner) *Plugin {
 }
 func (p *Plugin) Describe() plugins.Descriptor {
 	return plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{
-		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead},
-		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead},
-		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead},
+		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true}},
+		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true}},
+		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true}},
 	}}
 }
 
@@ -330,6 +330,19 @@ type diskRow struct {
 }
 
 func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
+	if len(targetSelectors(ctx)) == 0 {
+		b, e := p.call(ctx, "docker stats", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}")
+		if e != nil {
+			failCommand(o, issueRuntimeUnavailable, e)
+			return e
+		}
+		rows, e := decodeLines[statsRow](b)
+		if e != nil {
+			fail(o, issueRuntimeInvalid)
+			return e
+		}
+		return appendRuntimeRows(d, o, rows)
+	}
 	ids, e := p.selectContainers(ctx, targetSelectors(ctx))
 	if e != nil {
 		failCommand(o, issueListUnavailable, e)
@@ -367,6 +380,10 @@ func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugi
 		fail(o, issueRuntimeInvalid)
 		return e
 	}
+	return appendRuntimeRows(d, o, rows)
+}
+
+func appendRuntimeRows(d *plugins.DockerDetails, o *plugins.Outcome, rows []statsRow) error {
 	d.Runtime = make([]plugins.DockerContainerStats, 0, len(rows))
 	for _, r := range rows {
 		if !validID(r.ID) || r.Name == "" || r.CPUPerc == "" || r.MemUsage == "" || r.MemPerc == "" || r.NetIO == "" || r.BlockIO == "" || r.PIDs == "" {

@@ -61,13 +61,7 @@ func (p *Plugin) selectContainers(ctx context.Context, selectors []string) ([]st
 	}
 	rows, err := decodeLines[listedContainer](b)
 	if err != nil {
-		rows = nil
-		for _, id := range strings.Fields(string(b)) {
-			if !validID(id) {
-				return nil, err
-			}
-			rows = append(rows, listedContainer{ID: id})
-		}
+		return nil, err
 	}
 	if len(rows) > maxContainers {
 		return nil, errors.New("Docker container count exceeded limit")
