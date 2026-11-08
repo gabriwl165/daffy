@@ -1,0 +1,159 @@
+package docker
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gabriwl165/daffy/internal/plugins"
+)
+
+type fakeRunner struct {
+	outputs [][]byte
+	errs    []error
+	calls   int
+	args    [][]string
+}
+
+func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	i := f.calls
+	f.calls++
+	f.args = append(f.args, append([]string(nil), args...))
+	if i < len(f.errs) && f.errs[i] != nil {
+		return nil, f.errs[i]
+	}
+	if i < len(f.outputs) {
+		return f.outputs[i], nil
+	}
+	return nil, nil
+}
+
+func TestNativeDiskAndStats(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	r := &fakeRunner{outputs: [][]byte{[]byte(`{"Type":"Images","TotalCount":"3","Active":"1","Size":"1.2GB","Reclaimable":"100MB (10%)"}`), []byte(`{"ID":"` + id + `","Name":"web","CPUPerc":"0.1%","MemUsage":"1MiB / 2MiB","MemPerc":"50%","NetIO":"1kB / 2kB","BlockIO":"0B / 0B","PIDs":"1"}`)}}
+	p := New(r)
+	disk, e := p.Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
+	if e != nil || disk.Details.Docker.DiskUsage[0].TotalCount != 3 {
+		t.Fatalf("disk: %#v %v", disk, e)
+	}
+	runtime, e := p.Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime})
+	if e != nil || runtime.Details.Docker.Runtime[0].CPUPerc != "0.1%" {
+		t.Fatalf("runtime: %#v %v", runtime, e)
+	}
+	if strings.Join(r.args[0], " ") != "system df --format {{json .}}" || !containsArg(r.args[1], "--no-trunc") {
+		t.Fatalf("unexpected CLI args: %#v", r.args)
+	}
+}
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+func TestEmptyAndInvalidResponses(t *testing.T) {
+	for _, tc := range []struct {
+		data string
+		ok   bool
+	}{{"", false}, {`{"Type":"Images","TotalCount":"x","Active":"0","Size":"1GB","Reclaimable":"0B"}`, false}, {"", true}} {
+		r := &fakeRunner{outputs: [][]byte{[]byte(tc.data)}}
+		p := New(r)
+		op := plugins.OperationDisk
+		if tc.ok {
+			op = plugins.OperationRuntime
+		}
+		_, err := p.Analyze(context.Background(), plugins.Request{Operation: op})
+		if (err == nil) != tc.ok {
+			t.Errorf("data %q: err %v", tc.data, err)
+		}
+	}
+}
+func TestConfigEmptyAndPartialInspect(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	good := `[{"Id":"` + id + `","Name":"/app","State":{"Status":"running"},"HostConfig":{"Memory":0,"Privileged":true,"NanoCpus":0,"PidsLimit":0,"ReadonlyRootfs":false,"LogConfig":{"Type":"json-file"}},"Config":{"Env":["SUPER_SECRET"],"Cmd":["SECRET_ARG"]}}]`
+	r := &fakeRunner{outputs: [][]byte{[]byte("")}}
+	o, e := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+	if e != nil || len(o.Details.Docker.Config) != 0 {
+		t.Fatalf("empty: %v %#v", e, o)
+	}
+	r = &fakeRunner{outputs: [][]byte{[]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"), []byte(good)}}
+	o, e = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+	if e != nil || len(o.Details.Docker.Config) != 1 || len(o.Findings) != 2 || !strings.Contains(o.Findings[0].Summary, id) {
+		t.Fatalf("inspect: %v %#v", e, o)
+	}
+	encoded, _ := json.Marshal(o)
+	if strings.Contains(string(encoded), "SUPER_SECRET") || strings.Contains(string(encoded), "SECRET_ARG") {
+		t.Fatal("secret config data leaked")
+	}
+	r = &fakeRunner{outputs: [][]byte{[]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"), []byte("[]")}}
+	o, e = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+	if e == nil || o.Status != plugins.StatusPartial {
+		t.Fatalf("missing batch should be partial: %v %#v", e, o)
+	}
+	r = &fakeRunner{outputs: [][]byte{[]byte(id + "\n"), []byte(`[{"Id":"` + id + `","Name":"/x","State":{"Status":"running"},"HostConfig":{}}]`)}}
+	o, e = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+	if e == nil || o.Status != plugins.StatusPartial {
+		t.Fatal("missing host config evidence must be partial")
+	}
+}
+func TestAnalyzeValidationAndCommandRunner(t *testing.T) {
+	r := &fakeRunner{}
+	p := New(r)
+	if _, e := p.Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk, Options: plugins.Options{TopN: 1}}); !errors.Is(e, plugins.ErrInvalid) {
+		t.Fatalf("options: %v", e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, e := p.Analyze(ctx, plugins.Request{Operation: plugins.OperationDisk}); e == nil {
+		t.Fatal("expected cancellation")
+	}
+	runner := &CommandRunner{Binary: "/missing/docker-binary", Timeout: time.Second, OutputLimit: 8}
+	if _, e := runner.Run(context.Background(), "version"); !errors.Is(e, ErrUnavailable) {
+		t.Fatalf("missing binary error=%v", e)
+	}
+	if _, e := (&CommandRunner{Binary: "/usr/bin/printf", Timeout: time.Second, OutputLimit: 8}).Run(context.Background(), "%s", "0123456789abcdef"); e == nil {
+		t.Fatal("expected bounded output failure")
+	}
+}
+
+func TestAnalyzePreservesCommandDeadline(t *testing.T) {
+	r := &fakeRunner{errs: []error{context.DeadlineExceeded}}
+	_, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("command deadline lost: %v", err)
+	}
+}
+
+func TestInspectFailureDoesNotDiscardLaterBatch(t *testing.T) {
+	ids := make([]string, 51)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%064x", i+1)
+	}
+	second := `[{"Id":"` + ids[50] + `","Name":"/last","State":{"Status":"running"},"HostConfig":{"Memory":1,"Privileged":false}}]`
+	r := &fakeRunner{outputs: [][]byte{[]byte(strings.Join(ids, "\n")), nil, []byte(second)}}
+	r.errs = []error{nil, errors.New("sensitive daemon stderr"), nil}
+	o, e := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+	if e == nil || len(o.Details.Docker.Config) != 1 || o.Details.Docker.Config[0].ID != ids[50] {
+		t.Fatalf("later batch lost: %v %#v", e, o)
+	}
+	if strings.Contains(e.Error(), "sensitive") {
+		t.Fatal("raw runner error leaked")
+	}
+}
+
+func TestCommandRunnerTimeoutAndCancellation(t *testing.T) {
+	r := &CommandRunner{Binary: "/bin/sleep", Timeout: 20 * time.Millisecond, OutputLimit: 64}
+	if _, err := r.Run(context.Background(), "2"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout error=%v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (&CommandRunner{Binary: "/bin/sleep", Timeout: time.Second}).Run(ctx, "2"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error=%v", err)
+	}
+}
