@@ -53,3 +53,14 @@ func TestDiskDetailsUsesSelectedContextForBothCalls(t *testing.T) {
 		}
 	}
 }
+
+func TestDiskDetailsRejectsMalformedRowsAndRetainsSummary(t *testing.T) {
+	fixtures := []string{`{"Images":[{}],"Containers":[],"Volumes":[],"BuildCache":[]}`, `{"Images":[{"ID":"i"}],"Containers":[],"Volumes":[],"BuildCache":[]}`, `{"Images":[],"Containers":[null],"Volumes":[],"BuildCache":[]}`, `{"Images":[],"Containers":[],"Volumes":[{"Name":"v"}],"BuildCache":[]}`, `{"Images":[],"Containers":[],"Volumes":[],"BuildCache":[{"ID":"c","Size":" "}]}`}
+	for _, data := range fixtures {
+		r := &fakeRunner{outputs: [][]byte{[]byte(`{"Type":"Images","TotalCount":"2","Active":"1","Size":"4MB","Reclaimable":"N/A"}`), []byte(data)}}
+		o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk, Options: plugins.Options{DiskDetails: true}})
+		if err == nil || o.Status != plugins.StatusPartial || len(o.Details.Docker.DiskUsage) != 1 || o.Details.Docker.DiskUsage[0].TotalCount != 2 {
+			t.Errorf("malformed row lost summary: %s => %#v %v", data, o, err)
+		}
+	}
+}

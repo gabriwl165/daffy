@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/gabriwl165/daffy/internal/plugins"
 )
@@ -58,6 +59,30 @@ func (p *Plugin) diskDetails(ctx context.Context, d *plugins.DockerDetails, o *p
 		fail(o, issueDiskInvalid)
 		return ErrInvalidResponse
 	}
+	for _, r := range *env.Images {
+		if !hasValue(r.ID) || !hasValue(r.Size) {
+			fail(o, issueDiskInvalid)
+			return ErrInvalidResponse
+		}
+	}
+	for _, r := range *env.Containers {
+		if !hasValue(r.ID) || !hasValue(r.Size) {
+			fail(o, issueDiskInvalid)
+			return ErrInvalidResponse
+		}
+	}
+	for _, r := range *env.Volumes {
+		if !hasValue(r.Name) || !hasValue(r.Size) {
+			fail(o, issueDiskInvalid)
+			return ErrInvalidResponse
+		}
+	}
+	for _, r := range *env.BuildCache {
+		if !hasValue(r.ID) || !hasValue(r.Size) {
+			fail(o, issueDiskInvalid)
+			return ErrInvalidResponse
+		}
+	}
 	d.DiskBreakdown = []plugins.DockerDiskBreakdown{
 		{Category: "images", Items: mapImages(*env.Images)},
 		{Category: "containers", Items: mapContainers(*env.Containers)},
@@ -66,6 +91,7 @@ func (p *Plugin) diskDetails(ctx context.Context, d *plugins.DockerDetails, o *p
 	}
 	return nil
 }
+func hasValue(s string) bool { return strings.TrimSpace(s) != "" }
 func mapImages(rows []diskImage) []plugins.DockerDiskItem {
 	out := make([]plugins.DockerDiskItem, 0, len(rows))
 	for _, r := range rows {
