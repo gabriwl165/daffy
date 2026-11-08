@@ -21,7 +21,12 @@ func TestScannerTotalsAndExclusion(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Totals.ApparentBytes != 5 || r.Coverage.Files != 1 {
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Totals include the scanned directory's metadata as well as file contents.
+	if r.Totals.ApparentBytes != rootInfo.Size()+5 || r.Coverage.Files != 1 {
 		t.Fatalf("unexpected report: %+v", r)
 	}
 }
