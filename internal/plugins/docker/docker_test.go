@@ -157,3 +157,39 @@ func TestCommandRunnerTimeoutAndCancellation(t *testing.T) {
 		t.Fatalf("cancellation error=%v", err)
 	}
 }
+
+func TestRunnerTimeoutSelection(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if got := runnerTimeout(parent, NewCommandRunner().Timeout, commandTimeout); got != 0 {
+		t.Fatalf("default runner must inherit parent deadline, timeout=%v", got)
+	}
+	if got := runnerTimeout(parent, 0, commandTimeout); got != 0 {
+		t.Fatalf("parent deadline should be inherited, timeout=%v", got)
+	}
+	if got := runnerTimeout(parent, 25*time.Millisecond, commandTimeout); got != 25*time.Millisecond {
+		t.Fatalf("explicit timeout ignored: %v", got)
+	}
+	if got := runnerTimeout(context.Background(), 0, commandTimeout); got != commandTimeout {
+		t.Fatalf("no-deadline default=%v, want %v", got, commandTimeout)
+	}
+}
+
+func TestCommandRunnerExplicitTimeoutWithParentDeadline(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	r := &CommandRunner{Binary: "/bin/sleep", Timeout: 20 * time.Millisecond}
+	if _, err := r.Run(parent, "2"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("explicit runner timeout was not applied: %v", err)
+	}
+}
+
+func TestCommandRunnerInheritsParentDeadline(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	// The child completes well within the parent budget. A hidden default command
+	// timeout is distinguishable through runnerTimeout's selection test above.
+	if _, err := (&CommandRunner{Binary: "/usr/bin/true"}).Run(parent); err != nil {
+		t.Fatalf("inherited parent deadline: %v", err)
+	}
+}
