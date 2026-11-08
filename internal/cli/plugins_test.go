@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gabriwl165/daffy/internal/disk"
 	"github.com/gabriwl165/daffy/internal/plugins"
@@ -100,6 +101,25 @@ func TestPluginCancellationDeadlineAndWriters(t *testing.T) {
 			t.Fatalf("code=%d", code)
 		}
 	})
+}
+
+func TestPluginTimeoutIsPerBundleOperation(t *testing.T) {
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: "third", Operations: []plugins.Operation{op("first", true, plugins.SupportedOptions{}), op("second", true, plugins.SupportedOptions{})}}, analyze: func(ctx context.Context, req plugins.Request) (plugins.Outcome, error) {
+		if req.Operation == "first" {
+			<-ctx.Done()
+			return plugins.Outcome{}, ctx.Err()
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) < 10*time.Millisecond {
+			return plugins.Outcome{}, errors.New("second operation did not receive a fresh timeout")
+		}
+		return plugins.Outcome{Status: plugins.StatusComplete}, nil
+	}}
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), RunConfig{Args: []string{"plugins", "run", "third", "--timeout=20ms"}, Out: &out, ErrOut: &errOut, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+	if code != 1 || len(p.calls) != 2 || !strings.Contains(out.String(), "second") {
+		t.Fatalf("code=%d calls=%v output=%q stderr=%q", code, p.calls, out.String(), errOut.String())
+	}
 }
 
 func cancelledContext() context.Context {

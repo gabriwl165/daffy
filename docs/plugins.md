@@ -62,10 +62,16 @@ container or sandbox boundary.
 
 ## Execution and output
 
-`--timeout` is an overall deadline for the selected operation or default bundle.
-Operations run sequentially. An independent operation failure does not discard
-successful results from other operations. Cancellation stops further collection;
-unavailable and incomplete outcomes remain visible.
+`--timeout` is a per-operation budget (default: 15 seconds). Operations run
+sequentially, each with a fresh budget: a slow Docker disk check does not prevent
+runtime and configuration checks from running. A bundle can therefore take longer
+than the specified timeout. Use, for example, `daffy docker disk --timeout 60s`
+to give disk accounting more time; Docker commands use the operation's remaining
+budget rather than a separate fixed command limit.
+
+An independent operation failure does not discard successful results from other
+operations. Interrupting the command stops further collection; unavailable and
+incomplete outcomes remain visible.
 
 Text is the default; `--json` emits a versioned report with typed operation
 details. Findings do not cause a nonzero exit status. Partial reports (including

@@ -119,7 +119,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 	var diagnostics bytes.Buffer
 	fs.SetOutput(&diagnostics)
 	asJSON := fs.Bool(pluginFlagJSON, false, "emit JSON")
-	timeout := fs.Duration(pluginFlagTimeout, pluginDefaultTimeout, "operation timeout")
+	timeout := fs.Duration(pluginFlagTimeout, pluginDefaultTimeout, "per-operation timeout (bundle operations run sequentially)")
 	path := fs.String(pluginFlagPath, "", "explicit output or cache directory")
 	top := fs.Int(pluginFlagTop, pluginDefaultTop, "top entries")
 	var excludes stringsFlag
@@ -196,16 +196,14 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		fmt.Fprintf(errOut, "top must be between 0 and %d\n", pluginMaximumTop)
 		return int(exitUsage)
 	}
-	ctx, cancel := context.WithTimeout(ctx, *timeout)
-	defer cancel()
-	report, err := r.Run(ctx, id, plugins.Request{Operation: operation, Options: plugins.Options{Path: *path, Excludes: excludes, TopN: func() int {
+	report, err := r.RunWithTimeout(ctx, id, plugins.Request{Operation: operation, Options: plugins.Options{Path: *path, Excludes: excludes, TopN: func() int {
 		for _, op := range selected {
 			if op.Options.TopN {
 				return *top
 			}
 		}
 		return 0
-	}()}})
+	}()}}, *timeout)
 	if err != nil && (errors.Is(err, plugins.ErrInvalid) || errors.Is(err, plugins.ErrUnknownPlugin) || errors.Is(err, plugins.ErrUnknownOperation)) {
 		if _, werr := fmt.Fprintf(errOut, "%s\n", safe(err.Error())); werr != nil {
 			return int(exitFailure)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 	"unicode"
 
 	"github.com/gabriwl165/daffy/internal/disk"
@@ -218,6 +219,12 @@ func (r *Registry) List() []Descriptor {
 
 // Run executes the selected operation, or defaults belonging only to pluginID.
 func (r *Registry) Run(ctx context.Context, pluginID PluginID, req Request) (Report, error) {
+	return r.RunWithTimeout(ctx, pluginID, req, 0)
+}
+
+// RunWithTimeout applies an independent timeout to each operation when timeout is positive.
+// Parent cancellation and deadlines remain authoritative. A zero timeout preserves Run behavior.
+func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Request, timeout time.Duration) (Report, error) {
 	var report Report
 	report.SchemaVersion = SchemaVersion
 	report.Plugin = pluginID
@@ -267,10 +274,17 @@ func (r *Registry) Run(ctx context.Context, pluginID PluginID, req Request) (Rep
 			failures = append(failures, err)
 			continue
 		}
-		outcome, err := e.plugin.Analyze(ctx, Request{Operation: op.ID, Options: req.Options})
+		opCtx := ctx
+		cancel := func() {}
+		if timeout > 0 {
+			opCtx, cancel = context.WithTimeout(ctx, timeout)
+		}
+		outcome, err := e.plugin.Analyze(opCtx, Request{Operation: op.ID, Options: req.Options})
+		opErr := opCtx.Err()
+		cancel()
 		outcome.Operation = op.ID
-		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			err = errors.Join(err, ctxErr)
+		if opErr != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			err = errors.Join(err, opErr)
 		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type testPlugin struct {
@@ -15,10 +16,10 @@ type testPlugin struct {
 }
 
 func (p *testPlugin) Describe() Descriptor { return Descriptor{ID: p.id, Operations: p.ops} }
-func (p *testPlugin) Analyze(_ context.Context, r Request) (Outcome, error) {
+func (p *testPlugin) Analyze(ctx context.Context, r Request) (Outcome, error) {
 	p.calls = append(p.calls, r.Operation)
 	if p.analyze != nil {
-		return p.analyze(context.Background(), r)
+		return p.analyze(ctx, r)
 	}
 	return Outcome{Details: Details{Bazel: &BazelDetails{}}}, p.err
 }
@@ -128,6 +129,41 @@ func TestRunCancellationMarksRemaining(t *testing.T) {
 	report, err := r.Run(ctx, PluginDocker, Request{})
 	if err == nil || len(p.calls) != 1 || len(report.Outcomes) != 2 || report.Outcomes[0].Status != StatusCancelled || report.Outcomes[1].Status != StatusCancelled {
 		t.Fatalf("calls %v report %+v err %v", p.calls, report, err)
+	}
+}
+
+func TestRunWithTimeoutIsPerOperationAndParentCancellationWins(t *testing.T) {
+	var seen []time.Duration
+	p := &testPlugin{id: PluginDocker, ops: []Operation{op(OperationDisk, true), op(OperationRuntime, true)}, analyze: func(ctx context.Context, r Request) (Outcome, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("operation has no deadline")
+		}
+		seen = append(seen, time.Until(deadline))
+		if r.Operation == OperationDisk {
+			<-ctx.Done()
+			return Outcome{}, ctx.Err()
+		}
+		return Outcome{Status: StatusComplete}, nil
+	}}
+	r, _ := NewRegistry(p)
+	report, err := r.RunWithTimeout(context.Background(), PluginDocker, Request{}, 20*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || len(p.calls) != 2 || report.Outcomes[0].Status != StatusCancelled || report.Outcomes[1].Status != StatusComplete || len(seen) != 2 || seen[1] < 10*time.Millisecond {
+		t.Fatalf("calls=%v budgets=%v report=%+v err=%v", p.calls, seen, report, err)
+	}
+	one := &testPlugin{id: PluginDocker, ops: []Operation{op(OperationDisk, true)}, analyze: func(ctx context.Context, _ Request) (Outcome, error) {
+		<-ctx.Done()
+		return Outcome{}, ctx.Err()
+	}}
+	or, _ := NewRegistry(one)
+	if _, err := or.RunWithTimeout(context.Background(), PluginDocker, Request{Operation: OperationDisk}, time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("explicit operation timeout: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p.calls = nil
+	if _, err := r.RunWithTimeout(ctx, PluginDocker, Request{}, time.Second); !errors.Is(err, context.Canceled) || len(p.calls) != 0 {
+		t.Fatalf("parent cancellation err=%v calls=%v", err, p.calls)
 	}
 }
 

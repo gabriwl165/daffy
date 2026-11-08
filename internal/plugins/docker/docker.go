@@ -63,7 +63,17 @@ type CommandRunner struct {
 }
 
 func NewCommandRunner() *CommandRunner {
-	return &CommandRunner{Binary: "docker", Timeout: commandTimeout, OutputLimit: outputLimit}
+	return &CommandRunner{Binary: "docker", OutputLimit: outputLimit}
+}
+
+func runnerTimeout(ctx context.Context, configured, fallback time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return 0
+	}
+	return fallback
 }
 
 type cappedBuffer struct {
@@ -98,12 +108,12 @@ func (r *CommandRunner) Run(ctx context.Context, args ...string) ([]byte, error)
 	if limit <= 0 {
 		limit = outputLimit
 	}
-	timeout := r.Timeout
-	if timeout <= 0 {
-		timeout = commandTimeout
+	timeout := runnerTimeout(ctx, r.Timeout, commandTimeout)
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.WaitDelay = waitDelay
 	out := &cappedBuffer{limit: limit}
