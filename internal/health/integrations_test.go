@@ -135,7 +135,7 @@ func TestIntegrationBootInterpretation(t *testing.T) {
 }
 
 func TestDoctor(t *testing.T) {
-	checks := Doctor(context.Background(), Options{ProcRoot: t.TempDir(), SysRoot: filepath.Join(t.TempDir(), "missing")})
+	checks := doctorLinux(context.Background(), Options{ProcRoot: t.TempDir(), SysRoot: filepath.Join(t.TempDir(), "missing")})
 	got := map[string]Check{}
 	for _, c := range checks {
 		got[c.Name] = c

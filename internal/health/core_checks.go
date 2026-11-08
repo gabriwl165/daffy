@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 type coreAdd func(Finding)
@@ -216,27 +215,10 @@ func coreDiskRead(path string) map[string]uint64 {
 	return m
 }
 func coreDisk(proc string, before map[string]uint64, unsampled bool, add coreAdd) {
-	var st syscall.Statfs_t
-	if e := syscall.Statfs("/", &st); e != nil {
-		add(Finding{ID: coreFindingDiskRoot, Area: AreaDisk, Severity: SeverityUnknown, Summary: "Root filesystem capacity unavailable"})
+	if f := coreRootFilesystemFinding(); f.Severity == SeverityUnknown {
+		add(f)
 	} else {
-		total := st.Blocks * uint64(st.Bsize)
-		avail := st.Bavail * uint64(st.Bsize)
-		if avail > total {
-			add(Finding{ID: coreFindingDiskRoot, Area: AreaDisk, Severity: SeverityUnknown, Summary: "Root filesystem capacity inconsistent"})
-		} else {
-			used := uint64(0)
-			if total > 0 {
-				used = 100 * (total - avail) / total
-			}
-			sev := SeverityOK
-			if used >= 95 {
-				sev = SeverityCritical
-			} else if used >= 85 {
-				sev = SeverityWarning
-			}
-			add(Finding{ID: coreFindingDiskRoot, Area: AreaDisk, Severity: sev, Summary: fmt.Sprintf("Root filesystem used: %d%%", used), Evidence: []string{fmt.Sprintf("used_percent=%d", used), fmt.Sprintf("available_bytes=%d", avail)}})
-		}
+		add(f)
 	}
 	if unsampled {
 		add(Finding{ID: coreFindingDiskActivity, Area: AreaDisk, Severity: SeverityUnknown, Summary: "Disk I/O sample unavailable"})
@@ -265,6 +247,7 @@ func coreDisk(proc string, before map[string]uint64, unsampled bool, add coreAdd
 	}
 	add(Finding{ID: coreFindingDiskActivity, Area: AreaDisk, Severity: SeverityOK, Summary: "Per-device disk I/O activity; devices may include partitions; not a drive health assessment", Evidence: rows})
 }
+
 func coreSwap(proc string, before map[string]uint64, unsampled bool, add coreAdd) {
 	if unsampled {
 		add(Finding{ID: coreFindingSwapActivity, Area: Area("swap"), Severity: SeverityUnknown, Summary: "Swap activity sample unavailable"})

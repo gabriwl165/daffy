@@ -42,6 +42,15 @@ func TestCoreCounterAndCPUParsing(t *testing.T) {
 		t.Fatalf("fixture expected advancing total: %#v", old)
 	}
 }
+
+func TestCoreRootCapacityBoundaries(t *testing.T) {
+	if f := coreRootCapacity(0, 0); f.Severity != SeverityOK {
+		t.Fatalf("zero capacity: %#v", f)
+	}
+	if f := coreRootCapacity(100, 101); f.Severity != SeverityUnknown {
+		t.Fatalf("inconsistent capacity: %#v", f)
+	}
+}
 func TestCoreProcStatCommAndReuse(t *testing.T) {
 	p, e := coreParseProcStat("42 (java (Gradle Worker)) R 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 999")
 	if e != nil {

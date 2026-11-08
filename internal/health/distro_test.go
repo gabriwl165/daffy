@@ -53,14 +53,14 @@ func TestDistroCollectAndDoctor(t *testing.T) {
 		if tc.data != "" {
 			_ = os.WriteFile(filepath.Join(etc, "os-release"), []byte(tc.data), 0600)
 		}
-		r := CollectCore(context.Background(), Options{EtcRoot: etc, ProcRoot: filepath.Join(d, "proc"), SysRoot: filepath.Join(d, "sys"), SampleInterval: 1})
+		r := collectCore(context.Background(), Options{EtcRoot: etc, ProcRoot: filepath.Join(d, "proc"), SysRoot: filepath.Join(d, "sys"), SampleInterval: 1})
 		if r.System.DistroAdapter != tc.want {
 			t.Errorf("%s core metadata: %#v", tc.id, r.System)
 		}
 		if tc.id == "ubuntu" && r.System.DistroVersion != "24.04" {
 			t.Errorf("version missing: %#v", r.System)
 		}
-		checks := Doctor(context.Background(), Options{EtcRoot: etc})
+		checks := doctorLinux(context.Background(), Options{EtcRoot: etc})
 		by := map[string]Check{}
 		for _, c := range checks {
 			by[c.Name] = c
