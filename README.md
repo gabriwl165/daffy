@@ -13,15 +13,20 @@ binary without Go or root access. The installer requires `curl`, `tar`, and
 `sha256sum` on Linux or `shasum` on macOS, plus standard system utilities.
 Windows installation is not supported.
 
-Download the installer, inspect it, then run it:
+Download and run the installer to install or update to the latest release:
 
 ```sh
 curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
   https://raw.githubusercontent.com/gabriwl165/daffy/main/setup.sh \
-  --output setup.sh
-less setup.sh
-sh setup.sh
+  --output setup.sh &&
+  sh setup.sh
 ```
+
+This runs without an editor or pager. To review the script before running it,
+run only the `curl` command above (without `&&`), use `cat setup.sh` to display
+it, then run `sh setup.sh` when ready. If you prefer `less setup.sh`, press
+`q` to exit the viewer before running the installer. No save is needed;
+`:wq` is a Vim command, not an installation step.
 
 By default this installs only `daffy` into `$HOME/.local/bin`. It never invokes
 `sudo`, installs optional diagnostic tools, or changes shell configuration.
@@ -34,14 +39,17 @@ daffy doctor
 daffy scan
 ```
 
-To keep the PATH change, add the export to your shell's startup file yourself.
+The export takes effect immediately, without opening an editor. To keep the PATH
+change in future shells, optionally add it to your shell's startup file yourself.
 For a custom destination, use an absolute, writable directory:
 
 ```sh
 INSTALL_DIR="$HOME/bin" sh setup.sh
 ```
 
-Re-run the installer to update. To install a specific retained build, copy its
+Re-run the download-and-install command above to update an existing installation;
+it replaces the installed binary. Daffy does not update itself in the background.
+To install a specific retained build, copy its
 `build-<full-commit-SHA>` tag from [Releases](https://github.com/gabriwl165/daffy/releases):
 
 ```sh

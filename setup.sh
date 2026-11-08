@@ -39,8 +39,10 @@ cleanup() { [ -z "${stage:-}" ] || rm -f "$stage"; rm -rf "$tmp"; }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 archive="daffy_${platform}_${arch}.tar.gz"
+echo "Downloading daffy release archive and checksums..."
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$base/$archive" -o "$tmp/$archive" || fail "download failed: $archive"
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" || fail "download failed: SHA256SUMS"
+echo "Verifying release checksum..."
 expected=$(awk -v file="$archive" '$2 == file {print $1}' "$tmp/SHA256SUMS")
 case "$expected" in ''|*[!0-9a-fA-F]*) fail "missing or malformed checksum for $archive";; esac
 [ "${#expected}" -eq 64 ] || fail "malformed checksum for $archive"
