@@ -43,6 +43,12 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 		if !requested {
 			continue
 		}
+		type observation struct {
+			row plugins.DockerContainerStats
+			cpu float64
+			mem float64
+		}
+		observations := make([]observation, 0, len(d.Runtime))
 		for _, row := range d.Runtime {
 			cpu, e1 := percent(row.CPUPerc)
 			mem, e2 := percent(row.MemPerc)
@@ -50,6 +56,11 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 				fail(o, issueRuntimeInvalid)
 				return ErrInvalidResponse
 			}
+			observations = append(observations, observation{row: row, cpu: cpu, mem: mem})
+		}
+		// A sample contributes only after every row has validated.
+		for _, sample := range observations {
+			row, cpu, mem := sample.row, sample.cpu, sample.mem
 			item := peaks[row.ID]
 			if item == nil {
 				item = &plugins.DockerRuntimeTrendItem{ID: row.ID, Name: row.Name}
