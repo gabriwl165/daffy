@@ -11,39 +11,43 @@ import (
 	"syscall"
 )
 
-type coreAdd func(string, Area, Severity, string, ...string)
+type coreAdd func(Finding)
 
 func coreMemory(proc string, add coreAdd) {
 	m, e := coreReadCounters(filepath.Join(proc, "meminfo"))
 	total, tok := m["MemTotal:"]
 	avail, aok := m["MemAvailable:"]
 	if e != nil || !tok || !aok || total == 0 || avail > total {
-		add("memory.capacity", "memory", coreUnknown, "Memory values unavailable or inconsistent")
+		add(Finding{ID: coreFindingMemoryCapacity, Area: AreaMemory, Severity: SeverityUnknown, Summary: "Memory values unavailable or inconsistent"})
 		return
 	}
 	used := 100 * (total - avail) / total
-	sev := coreOK
+	sev := SeverityOK
 	if used >= 95 {
-		sev = coreCrit
+		sev = SeverityCritical
 	} else if used >= 85 {
-		sev = coreWarn
+		sev = SeverityWarning
 	}
-	add("memory.capacity", "memory", sev, fmt.Sprintf("Available memory: %d kB (%d%% used)", avail, used), fmt.Sprintf("available_kb=%d", avail), fmt.Sprintf("used_percent=%d", used))
+	add(Finding{ID: coreFindingMemoryCapacity, Area: AreaMemory, Severity: sev, Summary: fmt.Sprintf("Available memory: %d kB (%d%% used)", avail, used), Evidence: []string{fmt.Sprintf("available_kb=%d", avail), fmt.Sprintf("used_percent=%d", used)}})
 	st, so := m["SwapTotal:"]
 	sf, sok := m["SwapFree:"]
 	if !so || !sok || sf > st {
-		add("memory.swap", "memory", coreUnknown, "Swap information unavailable or inconsistent")
+		add(Finding{ID: coreFindingMemorySwap, Area: AreaMemory, Severity: SeverityUnknown, Summary: "Swap information unavailable or inconsistent"})
 	} else if st == 0 {
-		add("memory.swap", "memory", coreOK, "No swap configured")
+		add(Finding{ID: coreFindingMemorySwap, Area: AreaMemory, Severity: SeverityOK, Summary: "No swap configured"})
 	} else {
-		add("memory.swap", "memory", coreOK, fmt.Sprintf("Swap used: %d kB", st-sf), fmt.Sprintf("used_kb=%d", st-sf))
+		add(Finding{ID: coreFindingMemorySwap, Area: AreaMemory, Severity: SeverityOK, Summary: fmt.Sprintf("Swap used: %d kB", st-sf), Evidence: []string{fmt.Sprintf("used_kb=%d", st-sf)}})
 	}
 }
 func corePressure(proc string, add coreAdd) {
-	for _, name := range []string{"cpu", "memory", "io"} {
+	for _, pressure := range []struct {
+		name string
+		id   string
+	}{{"cpu", coreFindingPressureCPU}, {"memory", coreFindingPressureMemory}, {"io", coreFindingPressureIO}} {
+		name := pressure.name
 		b, e := os.ReadFile(filepath.Join(proc, "pressure", name))
 		if e != nil {
-			add("pressure."+name, "pressure", coreUnknown, name+" pressure unavailable")
+			add(Finding{ID: pressure.id, Area: AreaPressure, Severity: SeverityUnknown, Summary: name + " pressure unavailable"})
 			continue
 		}
 		values := []string{}
@@ -77,13 +81,13 @@ func corePressure(proc string, add coreAdd) {
 			values = append(values, strings.Join(f, " "))
 		}
 		if !valid || len(values) == 0 {
-			add("pressure."+name, "pressure", coreUnknown, name+" pressure data malformed")
+			add(Finding{ID: pressure.id, Area: AreaPressure, Severity: SeverityUnknown, Summary: name + " pressure data malformed"})
 		} else {
-			sev := coreOK
+			sev := SeverityOK
 			if high {
-				sev = coreWarn
+				sev = SeverityWarning
 			}
-			add("pressure."+name, "pressure", sev, name+" pressure averages available", values...)
+			add(Finding{ID: pressure.id, Area: AreaPressure, Severity: sev, Summary: name + " pressure averages available", Evidence: values})
 		}
 	}
 }
@@ -137,7 +141,7 @@ func coreThermal(sys string, add coreAdd) {
 		}
 	}
 	if len(sensors) == 0 {
-		add("thermal.temperature", "thermal", coreUnknown, "Temperature sensors unavailable")
+		add(Finding{ID: coreFindingThermalTemperature, Area: AreaThermal, Severity: SeverityUnknown, Summary: "Temperature sensors unavailable"})
 		return
 	}
 	keys := make([]string, 0, len(sensors))
@@ -146,7 +150,7 @@ func coreThermal(sys string, add coreAdd) {
 	}
 	sort.Strings(keys)
 	max := int64(0)
-	sev := coreOK
+	sev := SeverityOK
 	ev := []string{}
 	for _, k := range keys {
 		s := sensors[k]
@@ -155,16 +159,16 @@ func coreThermal(sys string, add coreAdd) {
 		}
 		ev = append(ev, fmt.Sprintf("sensor=%s temp_c=%d max_c=%d critical_c=%d", filepath.Base(k), s.input, s.max, s.crit))
 		if s.crit > 0 && s.input >= s.crit-5 {
-			sev = coreCrit
-		} else if sev != coreCrit && s.max > 0 && s.input >= s.max {
-			sev = coreWarn
+			sev = SeverityCritical
+		} else if sev != SeverityCritical && s.max > 0 && s.input >= s.max {
+			sev = SeverityWarning
 		} else if s.crit == 0 && s.max == 0 && s.input >= 90 {
-			sev = coreCrit
-		} else if s.crit == 0 && s.input >= 80 && sev == coreOK {
-			sev = coreWarn
+			sev = SeverityCritical
+		} else if s.crit == 0 && s.input >= 80 && sev == SeverityOK {
+			sev = SeverityWarning
 		}
 	}
-	add("thermal.temperature", "thermal", sev, fmt.Sprintf("Highest reported temperature: %d C", max), ev...)
+	add(Finding{ID: coreFindingThermalTemperature, Area: AreaThermal, Severity: sev, Summary: fmt.Sprintf("Highest reported temperature: %d C", max), Evidence: ev})
 }
 func coreThrottleRead(sys string) map[string]uint64 {
 	m := map[string]uint64{}
@@ -181,11 +185,11 @@ func coreThrottleRead(sys string) map[string]uint64 {
 func coreThrottle(sys string, before map[string]uint64, cancelled bool, add coreAdd) {
 	after := coreThrottleRead(sys)
 	if len(before) == 0 || len(after) == 0 {
-		add("thermal.throttle", "thermal", coreUnknown, "Thermal throttle counters unavailable")
+		add(Finding{ID: coreFindingThermalThrottle, Area: AreaThermal, Severity: SeverityUnknown, Summary: "Thermal throttle counters unavailable"})
 		return
 	}
 	if cancelled {
-		add("thermal.throttle", "thermal", coreUnknown, "Thermal throttle sample cancelled")
+		add(Finding{ID: coreFindingThermalThrottle, Area: AreaThermal, Severity: SeverityUnknown, Summary: "Thermal throttle sample cancelled"})
 		return
 	}
 	comparable := 0
@@ -208,17 +212,17 @@ func coreThrottle(sys string, before map[string]uint64, cancelled bool, add core
 		}
 	}
 	if comparable == 0 {
-		add("thermal.throttle", "thermal", coreUnknown, "No comparable thermal throttle counters")
+		add(Finding{ID: coreFindingThermalThrottle, Area: AreaThermal, Severity: SeverityUnknown, Summary: "No comparable thermal throttle counters"})
 		return
 	}
 	if reset {
-		add("thermal.throttle", "thermal", coreUnknown, "Thermal throttle counter reset during sample")
+		add(Finding{ID: coreFindingThermalThrottle, Area: AreaThermal, Severity: SeverityUnknown, Summary: "Thermal throttle counter reset during sample"})
 	} else if inc {
-		add("thermal.throttle", "thermal", coreWarn, "Thermal throttling increased during sample")
+		add(Finding{ID: coreFindingThermalThrottle, Area: AreaThermal, Severity: SeverityWarning, Summary: "Thermal throttling increased during sample"})
 	} else if historical {
-		add("thermal.throttle", "thermal", coreOK, "Historical thermal throttling recorded; no increase during sample")
+		add(Finding{ID: coreFindingThermalThrottle, Area: AreaThermal, Severity: SeverityOK, Summary: "Historical thermal throttling recorded; no increase during sample"})
 	} else {
-		add("thermal.throttle", "thermal", coreOK, "No thermal throttling recorded during sample")
+		add(Finding{ID: coreFindingThermalThrottle, Area: AreaThermal, Severity: SeverityOK, Summary: "No thermal throttling recorded during sample"})
 	}
 }
 func coreDiskRead(path string) map[string]uint64 {
@@ -247,33 +251,33 @@ func coreDiskRead(path string) map[string]uint64 {
 func coreDisk(proc string, before map[string]uint64, unsampled bool, add coreAdd) {
 	var st syscall.Statfs_t
 	if e := syscall.Statfs("/", &st); e != nil {
-		add("disk.root", "disk", coreUnknown, "Root filesystem capacity unavailable")
+		add(Finding{ID: coreFindingDiskRoot, Area: AreaDisk, Severity: SeverityUnknown, Summary: "Root filesystem capacity unavailable"})
 	} else {
 		total := st.Blocks * uint64(st.Bsize)
 		avail := st.Bavail * uint64(st.Bsize)
 		if avail > total {
-			add("disk.root", "disk", coreUnknown, "Root filesystem capacity inconsistent")
+			add(Finding{ID: coreFindingDiskRoot, Area: AreaDisk, Severity: SeverityUnknown, Summary: "Root filesystem capacity inconsistent"})
 		} else {
 			used := uint64(0)
 			if total > 0 {
 				used = 100 * (total - avail) / total
 			}
-			sev := coreOK
+			sev := SeverityOK
 			if used >= 95 {
-				sev = coreCrit
+				sev = SeverityCritical
 			} else if used >= 85 {
-				sev = coreWarn
+				sev = SeverityWarning
 			}
-			add("disk.root", "disk", sev, fmt.Sprintf("Root filesystem used: %d%%", used), fmt.Sprintf("used_percent=%d", used), fmt.Sprintf("available_bytes=%d", avail))
+			add(Finding{ID: coreFindingDiskRoot, Area: AreaDisk, Severity: sev, Summary: fmt.Sprintf("Root filesystem used: %d%%", used), Evidence: []string{fmt.Sprintf("used_percent=%d", used), fmt.Sprintf("available_bytes=%d", avail)}})
 		}
 	}
 	if unsampled {
-		add("disk.activity", "disk", coreUnknown, "Disk I/O sample unavailable")
+		add(Finding{ID: coreFindingDiskActivity, Area: AreaDisk, Severity: SeverityUnknown, Summary: "Disk I/O sample unavailable"})
 		return
 	}
 	after := coreDiskRead(filepath.Join(proc, "diskstats"))
 	if len(before) == 0 || len(after) == 0 {
-		add("disk.activity", "disk", coreUnknown, "Disk activity counters unavailable or malformed")
+		add(Finding{ID: coreFindingDiskActivity, Area: AreaDisk, Severity: SeverityUnknown, Summary: "Disk activity counters unavailable or malformed"})
 		return
 	}
 	comparable := 0
@@ -285,23 +289,23 @@ func coreDisk(proc string, before map[string]uint64, unsampled bool, add coreAdd
 		}
 	}
 	if comparable == 0 {
-		add("disk.activity", "disk", coreUnknown, "No comparable disk activity counters")
+		add(Finding{ID: coreFindingDiskActivity, Area: AreaDisk, Severity: SeverityUnknown, Summary: "No comparable disk activity counters"})
 		return
 	}
 	sort.Strings(rows)
 	if len(rows) > 10 {
 		rows = rows[:10]
 	}
-	add("disk.activity", "disk", coreOK, "Per-device disk I/O activity; devices may include partitions; not a drive health assessment", rows...)
+	add(Finding{ID: coreFindingDiskActivity, Area: AreaDisk, Severity: SeverityOK, Summary: "Per-device disk I/O activity; devices may include partitions; not a drive health assessment", Evidence: rows})
 }
 func coreSwap(proc string, before map[string]uint64, unsampled bool, add coreAdd) {
 	if unsampled {
-		add("swap.activity", "swap", coreUnknown, "Swap activity sample unavailable")
+		add(Finding{ID: coreFindingSwapActivity, Area: Area("swap"), Severity: SeverityUnknown, Summary: "Swap activity sample unavailable"})
 		return
 	}
 	after, e := coreReadCounters(filepath.Join(proc, "vmstat"))
 	if e != nil {
-		add("swap.activity", "swap", coreUnknown, "Swap activity counters unavailable")
+		add(Finding{ID: coreFindingSwapActivity, Area: Area("swap"), Severity: SeverityUnknown, Summary: "Swap activity counters unavailable"})
 		return
 	}
 	a, aok := before["pswpin"]
@@ -309,12 +313,12 @@ func coreSwap(proc string, before map[string]uint64, unsampled bool, add coreAdd
 	c, cok := after["pswpin"]
 	d, dok := after["pswpout"]
 	if !aok || !bok || !cok || !dok {
-		add("swap.activity", "swap", coreUnknown, "Swap activity counters unavailable")
+		add(Finding{ID: coreFindingSwapActivity, Area: Area("swap"), Severity: SeverityUnknown, Summary: "Swap activity counters unavailable"})
 		return
 	}
 	if c < a || d < b {
-		add("swap.activity", "swap", coreUnknown, "Swap activity counters reset")
+		add(Finding{ID: coreFindingSwapActivity, Area: Area("swap"), Severity: SeverityUnknown, Summary: "Swap activity counters reset"})
 		return
 	}
-	add("swap.activity", "swap", coreOK, "Swap activity counters sampled", fmt.Sprintf("pages_in_delta=%d", c-a), fmt.Sprintf("pages_out_delta=%d", d-b))
+	add(Finding{ID: coreFindingSwapActivity, Area: Area("swap"), Severity: SeverityOK, Summary: "Swap activity counters sampled", Evidence: []string{fmt.Sprintf("pages_in_delta=%d", c-a), fmt.Sprintf("pages_out_delta=%d", d-b)}})
 }

@@ -20,10 +20,10 @@ func TestCoreCounterAndCPUParsing(t *testing.T) {
 		t.Fatalf("meminfo parse: %v %#v", e, m)
 	}
 	add := []Finding{}
-	coreMemory(d, func(id string, a Area, s Severity, su string, ev ...string) {
-		add = append(add, Finding{ID: id, Severity: s, Summary: su})
+	coreMemory(d, func(f Finding) {
+		add = append(add, f)
 	})
-	if len(add) != 2 || add[0].Severity != coreWarn {
+	if len(add) != 2 || add[0].Severity != SeverityWarning {
 		t.Fatalf("memory thresholds: %#v", add)
 	}
 	cpu := filepath.Join(d, "stat")
@@ -71,8 +71,8 @@ func TestCorePressureMalformedAndHigh(t *testing.T) {
 	os.WriteFile(filepath.Join(d, "pressure/cpu"), []byte("some avg10=25.00 avg60=1.00 avg300=1.00 total=42\n"), 0600)
 	os.WriteFile(filepath.Join(d, "pressure/memory"), []byte("garbage\n"), 0600)
 	out := map[string]Severity{}
-	corePressure(d, func(id string, a Area, s Severity, su string, ev ...string) { out[id] = s })
-	if out["pressure.cpu"] != coreWarn || out["pressure.memory"] != coreUnknown {
+	corePressure(d, func(f Finding) { out[f.ID] = f.Severity })
+	if out["pressure.cpu"] != SeverityWarning || out["pressure.memory"] != SeverityUnknown {
 		t.Fatalf("pressure classifications: %#v", out)
 	}
 }
@@ -83,9 +83,9 @@ func TestCorePressureRejectsNaN(t *testing.T) {
 	for _, n := range []string{"cpu", "memory", "io"} {
 		os.WriteFile(filepath.Join(d, "pressure", n), []byte("some avg10=NaN avg60=0 avg300=0 total=1\n"), 0600)
 	}
-	corePressure(d, func(id string, a Area, s Severity, su string, ev ...string) {
-		if s != coreUnknown {
-			t.Errorf("%s severity=%s", id, s)
+	corePressure(d, func(f Finding) {
+		if f.Severity != SeverityUnknown {
+			t.Errorf("%s severity=%s", f.ID, f.Severity)
 		}
 	})
 }
@@ -101,16 +101,16 @@ func TestCoreThermalSymlinksLimitsAndFallback(t *testing.T) {
 	os.Remove(filepath.Join(d, "class/hwmon/hwmon0"))
 	os.Symlink(real, filepath.Join(d, "class/hwmon/hwmon0"))
 	out := Severity("")
-	coreThermal(d, func(id string, a Area, s Severity, su string, ev ...string) { out = s })
-	if out != coreWarn {
+	coreThermal(d, func(f Finding) { out = f.Severity })
+	if out != SeverityWarning {
 		t.Fatalf("symlink sensor/limit severity=%s", out)
 	}
 	// Near the critical hardware trip threshold is critical, and thermal-zone
 	// sysfs temperatures are millidegrees even when represented as temp.
 	os.WriteFile(filepath.Join(real, "temp1_input"), []byte("99000"), 0600)
 	out = ""
-	coreThermal(d, func(id string, a Area, s Severity, su string, ev ...string) { out = s })
-	if out != coreCrit {
+	coreThermal(d, func(f Finding) { out = f.Severity })
+	if out != SeverityCritical {
 		t.Fatalf("near-critical severity=%s", out)
 	}
 	zoneRoot := filepath.Join(d, "fallback")
@@ -118,15 +118,15 @@ func TestCoreThermalSymlinksLimitsAndFallback(t *testing.T) {
 	os.MkdirAll(zone, 0700)
 	os.WriteFile(filepath.Join(zone, "temp"), []byte("42000"), 0600)
 	summary := ""
-	coreThermal(zoneRoot, func(id string, a Area, s Severity, su string, ev ...string) { summary = su })
+	coreThermal(zoneRoot, func(f Finding) { summary = f.Summary })
 	if !strings.Contains(summary, "42 C") {
 		t.Fatalf("thermal-zone unit conversion: %s", summary)
 	}
 	fallback := filepath.Join(d, "class/thermal/thermal_zone0")
 	os.MkdirAll(fallback, 0700)
 	os.WriteFile(filepath.Join(fallback, "temp"), []byte("95000"), 0600)
-	coreThermal(d, func(id string, a Area, s Severity, su string, ev ...string) { out = s })
-	if out != coreCrit {
+	coreThermal(d, func(f Finding) { out = f.Severity })
+	if out != SeverityCritical {
 		t.Fatalf("thermal fallback severity=%s", out)
 	}
 }
@@ -137,7 +137,7 @@ func TestCoreCancelledSamplingUnknown(t *testing.T) {
 	r := collectCore(ctx, Options{ProcRoot: t.TempDir(), SysRoot: t.TempDir(), EtcRoot: t.TempDir(), SampleInterval: time.Hour})
 	found := false
 	for _, f := range r.Findings {
-		if f.ID == "process.cpu" && f.Severity == coreUnknown {
+		if f.ID == "process.cpu" && f.Severity == SeverityUnknown {
 			found = true
 		}
 	}
@@ -154,14 +154,14 @@ func TestCoreThrottleAndDiskDeltas(t *testing.T) {
 	before := coreThrottleRead(d)
 	os.WriteFile(f, []byte("6"), 0600)
 	sev := Severity("")
-	coreThrottle(d, before, false, func(id string, a Area, s Severity, su string, ev ...string) { sev = s })
-	if sev != coreWarn {
+	coreThrottle(d, before, false, func(f Finding) { sev = f.Severity })
+	if sev != SeverityWarning {
 		t.Fatalf("active throttle=%s", sev)
 	}
 	os.WriteFile(f, []byte("2"), 0600)
 	before = map[string]uint64{f: 5}
-	coreThrottle(d, before, false, func(id string, a Area, s Severity, su string, ev ...string) { sev = s })
-	if sev != coreUnknown {
+	coreThrottle(d, before, false, func(f Finding) { sev = f.Severity })
+	if sev != SeverityUnknown {
 		t.Fatalf("reset throttle=%s", sev)
 	}
 	disk := filepath.Join(d, "diskstats")
@@ -177,20 +177,20 @@ func TestCoreThrottleAndDiskDeltas(t *testing.T) {
 
 func TestCoreNoComparableCounterSamplesUnknown(t *testing.T) {
 	sev := Severity("")
-	coreThrottle(t.TempDir(), map[string]uint64{"old": 3}, false, func(id string, a Area, s Severity, su string, ev ...string) { sev = s })
-	if sev != coreUnknown {
+	coreThrottle(t.TempDir(), map[string]uint64{"old": 3}, false, func(f Finding) { sev = f.Severity })
+	if sev != SeverityUnknown {
 		t.Fatalf("unmatched throttle counters severity=%s", sev)
 	}
 	proc := t.TempDir()
 	disk := filepath.Join(proc, "diskstats")
 	os.WriteFile(disk, []byte("8 0 sda 1 0 10 0 1 0 10 0 0 0 0 0 0 0\n"), 0600)
 	sev = ""
-	coreDisk(proc, map[string]uint64{"other": 2}, false, func(id string, a Area, s Severity, su string, ev ...string) {
-		if id == "disk.activity" {
-			sev = s
+	coreDisk(proc, map[string]uint64{"other": 2}, false, func(f Finding) {
+		if f.ID == coreFindingDiskActivity {
+			sev = f.Severity
 		}
 	})
-	if sev != coreUnknown {
+	if sev != SeverityUnknown {
 		t.Fatalf("unmatched disk counters severity=%s", sev)
 	}
 }

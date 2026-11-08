@@ -15,13 +15,37 @@ import (
 
 const integrationOutputLimit = 256 * 1024
 
+const (
+	findingJournalCurrent  = "journal-current"
+	findingJournalPrevious = "journal-previous"
+	findingFailedUnits     = "failed-units"
+	findingBootTime        = "boot-time"
+	findingGPUDevice       = "gpu-device"
+	findingPowerProfile    = "power-profile"
+	findingDiskInventory   = "disk-inventory"
+	findingDiskSMART       = "disk-smart"
+)
+
+type journalEventCounts struct{ gpuFaults, ioErrors, kernelPanics, oomKills, thermalEvents int }
+
+var journalEventOrder = []struct {
+	label string
+	count func(journalEventCounts) int
+}{
+	{"GPU faults", func(c journalEventCounts) int { return c.gpuFaults }},
+	{"I/O errors", func(c journalEventCounts) int { return c.ioErrors }},
+	{"kernel panics", func(c journalEventCounts) int { return c.kernelPanics }},
+	{"oom kills", func(c journalEventCounts) int { return c.oomKills }},
+	{"thermal events", func(c journalEventCounts) int { return c.thermalEvents }},
+}
+
 type integrationResult struct {
 	stdout, stderr []byte
 	err            error
 	truncated      bool
 }
 
-type integrationExecutor func(context.Context, time.Duration, string, ...string) integrationResult
+type integrationExecutor func(context.Context, commandConfig) integrationResult
 
 var integrationRun integrationExecutor = integrationExec
 
@@ -45,13 +69,13 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func integrationExec(parent context.Context, timeout time.Duration, name string, args ...string) integrationResult {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
+func integrationExec(parent context.Context, cfg commandConfig) integrationResult {
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 5 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(parent, cfg.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, string(cfg.Tool), cfg.Args...)
 	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "SYSTEMD_PAGER=cat", "SYSTEMD_PAGERSECURE=1")
 	var out, errout boundedBuffer
@@ -63,8 +87,9 @@ func integrationExec(parent context.Context, timeout time.Duration, name string,
 	return integrationResult{stdout: out.Bytes(), stderr: errout.Bytes(), err: err, truncated: out.truncated || errout.truncated}
 }
 
-func integrationFinding(id, area, severity, summary string, evidence ...string) Finding {
-	return Finding{ID: id, Area: Area(area), Severity: Severity(severity), Summary: summary, Evidence: evidence, Confidence: ConfidenceMedium}
+func integrationFinding(f Finding) Finding {
+	f.Confidence = ConfidenceMedium
+	return f
 }
 
 // Collect augments core procfs/sysfs signals with bounded, read-only system tools.
@@ -73,10 +98,10 @@ func Collect(ctx context.Context, opts Options) Report {
 	r := CollectCore(ctx, opts)
 	var fs []Finding
 	if ctx.Err() == nil {
-		fs = append(fs, integrationJournal(ctx, opts, "--boot", "current")...)
+		fs = append(fs, integrationJournal(ctx, opts, journalCurrent)...)
 	}
 	if ctx.Err() == nil {
-		fs = append(fs, integrationJournal(ctx, opts, "--boot=-1", "previous")...)
+		fs = append(fs, integrationJournal(ctx, opts, journalPrevious)...)
 	}
 	if ctx.Err() == nil {
 		fs = append(fs, integrationServices(ctx, opts)...)
@@ -98,51 +123,47 @@ func Collect(ctx context.Context, opts Options) Report {
 	return r
 }
 
-func integrationJournal(ctx context.Context, o Options, bootArg, label string) []Finding {
-	r := integrationRun(ctx, o.CommandTimeout, "journalctl", "--no-pager", "--quiet", "--lines=1500", "-k", bootArg, "-o", "cat")
+func integrationJournal(ctx context.Context, o Options, boot journalBoot) []Finding {
+	cfg, label := boot.config(o.CommandTimeout)
+	r := integrationRun(ctx, cfg)
 	if r.err != nil {
-		sev, detail := "unknown", "journalctl unavailable or kernel journal unreadable"
-		if label == "previous" && strings.Contains(strings.ToLower(string(r.stderr)), "no journal files") {
+		sev, detail := SeverityUnknown, "journalctl unavailable or kernel journal unreadable"
+		if boot == journalPrevious && strings.Contains(strings.ToLower(string(r.stderr)), "no journal files") {
 			detail = "previous boot journal unavailable"
 		}
-		f := integrationFinding("journal-"+label, "logs", sev, detail)
+		f := integrationFinding(Finding{ID: journalFindingID(boot), Area: AreaLogs, Severity: sev, Summary: detail})
 		f.Recommendation = "Check journal permissions and availability; absence of readable logs is not evidence of health."
 		return []Finding{f}
 	}
 	if strings.TrimSpace(string(r.stderr)) != "" || strings.TrimSpace(string(r.stdout)) == "" {
-		f := integrationFinding("journal-"+label, "logs", "unknown", "Kernel journal read was empty or reported diagnostics; matching events cannot be ruled out")
+		f := integrationFinding(Finding{ID: journalFindingID(boot), Area: AreaLogs, Severity: SeverityUnknown, Summary: "Kernel journal read was empty or reported diagnostics; matching events cannot be ruled out"})
 		f.Recommendation = "Check journal permissions and whether this boot has retained kernel logs."
 		return []Finding{f}
 	}
-	counts := map[string]int{"oom kills": 0, "GPU faults": 0, "I/O errors": 0, "kernel panics": 0, "thermal events": 0}
+	var counts journalEventCounts
 	for _, line := range strings.Split(strings.ToLower(string(r.stdout)), "\n") {
 		if strings.Contains(line, "oom-kill") || strings.Contains(line, "killed process") || strings.Contains(line, "out of memory: kill process") {
-			counts["oom kills"]++
+			counts.oomKills++
 		}
 		if (strings.Contains(line, "nvrm") || strings.Contains(line, "amdgpu") || strings.Contains(line, "nouveau") || strings.Contains(line, "gpu")) && (strings.Contains(line, "hang detected") || strings.Contains(line, "fault") || strings.Contains(line, "xid") || strings.Contains(line, "ring timeout")) {
-			counts["GPU faults"]++
+			counts.gpuFaults++
 		}
 		if strings.Contains(line, "i/o error") || strings.Contains(line, "blk_update_request") || strings.Contains(line, "buffer i/o") {
-			counts["I/O errors"]++
+			counts.ioErrors++
 		}
 		if strings.Contains(line, "kernel panic") || strings.Contains(line, "not syncing:") {
-			counts["kernel panics"]++
+			counts.kernelPanics++
 		}
 		if (strings.Contains(line, "thermal") && (strings.Contains(line, "critical temperature") || strings.Contains(line, "thermal trip") || strings.Contains(line, "overheat") || strings.Contains(line, "throttl"))) || strings.Contains(line, "temperature above threshold") {
-			counts["thermal events"]++
+			counts.thermalEvents++
 		}
 	}
 	var ev []string
 	severe := false
-	keys := make([]string, 0, len(counts))
-	for k := range counts {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		if counts[k] > 0 {
+	for _, event := range journalEventOrder {
+		if n := event.count(counts); n > 0 {
 			severe = true
-			ev = append(ev, fmt.Sprintf("%s: %d", k, counts[k]))
+			ev = append(ev, fmt.Sprintf("%s: %d", event.label, n))
 		}
 	}
 	if len(ev) == 0 {
@@ -158,13 +179,13 @@ func integrationJournal(ctx context.Context, o Options, bootArg, label string) [
 		}
 		ev = append(ev, "log excerpt: "+raw)
 	}
-	sev := "info"
+	sev := SeverityInfo
 	summary := "No matching events found in sampled " + label + " boot journal window"
 	if severe {
-		sev = "warning"
+		sev = SeverityWarning
 		summary = "Kernel events require review in " + label + " boot journal"
 	}
-	f := integrationFinding("journal-"+label, "logs", sev, summary, ev...)
+	f := integrationFinding(Finding{ID: journalFindingID(boot), Area: AreaLogs, Severity: sev, Summary: summary, Evidence: ev})
 	if severe {
 		f.Recommendation = "Review the matching kernel events and correlate with the affected hardware or workload."
 	}
@@ -172,13 +193,13 @@ func integrationJournal(ctx context.Context, o Options, bootArg, label string) [
 }
 
 func integrationServices(ctx context.Context, o Options) []Finding {
-	r := integrationRun(ctx, o.CommandTimeout, "systemctl", "--failed", "--no-legend", "--plain")
+	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolSystemctl, Args: []string{"--failed", "--no-legend", "--plain"}})
 	if r.err != nil {
-		return []Finding{integrationFinding("failed-units", "services", "unknown", "Failed service state unavailable")}
+		return []Finding{integrationFinding(Finding{ID: findingFailedUnits, Area: AreaServices, Severity: SeverityUnknown, Summary: "Failed service state unavailable"})}
 	}
 	text := strings.TrimSpace(string(r.stdout))
 	if text == "" || text == "0 loaded units listed." {
-		return []Finding{integrationFinding("failed-units", "services", "ok", "No failed systemd units reported")}
+		return []Finding{integrationFinding(Finding{ID: findingFailedUnits, Area: AreaServices, Severity: SeverityOK, Summary: "No failed systemd units reported"})}
 	}
 	lines := strings.Split(text, "\n")
 	if !o.IncludeSensitive {
@@ -192,19 +213,19 @@ func integrationServices(ctx context.Context, o Options) []Finding {
 	if len(lines) > 20 {
 		lines = lines[:20]
 	}
-	f := integrationFinding("failed-units", "services", "warning", "Systemd reports failed units", lines...)
+	f := integrationFinding(Finding{ID: findingFailedUnits, Area: AreaServices, Severity: SeverityWarning, Summary: "Systemd reports failed units", Evidence: lines})
 	f.Recommendation = "Inspect failed units and their status before attempting recovery."
 	return []Finding{f}
 }
 
 func integrationBootTime(ctx context.Context, o Options) []Finding {
-	r := integrationRun(ctx, o.CommandTimeout, "systemd-analyze", "time")
+	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolSystemdAnalyze, Args: []string{"time"}})
 	if r.err != nil {
-		return []Finding{integrationFinding("boot-time", "boot", "unknown", "Boot timing unavailable")}
+		return []Finding{integrationFinding(Finding{ID: findingBootTime, Area: AreaBoot, Severity: SeverityUnknown, Summary: "Boot timing unavailable"})}
 	}
 	text := strings.TrimSpace(string(r.stdout))
 	ev := []string{text, "Firmware time is pre-userspace platform startup; loader and userspace timings describe subsequent boot stages."}
-	f := integrationFinding("boot-time", "boot", "info", "Systemd boot timing", ev...)
+	f := integrationFinding(Finding{ID: findingBootTime, Area: AreaBoot, Severity: SeverityInfo, Summary: "Systemd boot timing", Evidence: ev})
 	if strings.Contains(text, "firmware") && strings.Contains(text, "userspace") {
 		f.Recommendation = "Compare firmware and userspace durations to identify which boot stage dominates; investigate that stage if boot is unusually slow."
 	}
@@ -231,29 +252,29 @@ func integrationGPU(ctx context.Context, o Options) []Finding {
 		drv := filepath.Base(driver)
 		id := strings.ReplaceAll(filepath.Base(p), ":", "-")
 		if v == "0x10de" && drv == "nouveau" {
-			f := integrationFinding("gpu-nouveau-"+id, "gpu", "warning", "Nouveau driver detected on NVIDIA hardware; review compatibility, not evidence of a fault", fmt.Sprintf("PCI vendor/device %s:%s; driver %s", v, d, drv))
+			f := integrationFinding(Finding{ID: "gpu-nouveau-" + id, Area: AreaGPU, Severity: SeverityWarning, Summary: "Nouveau driver detected on NVIDIA hardware; review compatibility, not evidence of a fault", Evidence: []string{fmt.Sprintf("PCI vendor/device %s:%s; driver %s", v, d, drv)}})
 			f.Recommendation = "Review supported driver options for this GPU if graphics instability is observed."
 			found = append(found, f)
 		} else {
 			if drv == "." || drv == "" {
-				found = append(found, integrationFinding("gpu-driver-"+id, "gpu", "unknown", "GPU identified but active driver is unavailable", fmt.Sprintf("PCI vendor/device %s:%s", v, d)))
+				found = append(found, integrationFinding(Finding{ID: "gpu-driver-" + id, Area: AreaGPU, Severity: SeverityUnknown, Summary: "GPU identified but active driver is unavailable", Evidence: []string{fmt.Sprintf("PCI vendor/device %s:%s", v, d)}}))
 				continue
 			}
-			found = append(found, integrationFinding("gpu-device-"+id, "gpu", "info", "GPU device detected", fmt.Sprintf("PCI vendor/device %s:%s; driver %s", v, d, drv)))
+			found = append(found, integrationFinding(Finding{ID: "gpu-device-" + id, Area: AreaGPU, Severity: SeverityInfo, Summary: "GPU device detected", Evidence: []string{fmt.Sprintf("PCI vendor/device %s:%s; driver %s", v, d, drv)}}))
 		}
 	}
 	if len(found) == 0 {
-		found = append(found, integrationFinding("gpu-device", "gpu", "unknown", "No GPU devices identified from sysfs"))
+		found = append(found, integrationFinding(Finding{ID: findingGPUDevice, Area: AreaGPU, Severity: SeverityUnknown, Summary: "No GPU devices identified from sysfs"}))
 	}
 	return found
 }
 
 func integrationPower(ctx context.Context, o Options) []Finding {
-	r := integrationRun(ctx, o.CommandTimeout, "powerprofilesctl", "get")
+	r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolPowerprofilesctl, Args: []string{"get"}})
 	if r.err != nil {
-		return []Finding{integrationFinding("power-profile", "power", "unknown", "Power profile unavailable")}
+		return []Finding{integrationFinding(Finding{ID: findingPowerProfile, Area: AreaPower, Severity: SeverityUnknown, Summary: "Power profile unavailable"})}
 	}
-	return []Finding{integrationFinding("power-profile", "power", "info", "Current power profile", strings.TrimSpace(string(r.stdout)))}
+	return []Finding{integrationFinding(Finding{ID: findingPowerProfile, Area: AreaPower, Severity: SeverityInfo, Summary: "Current power profile", Evidence: []string{strings.TrimSpace(string(r.stdout))}})}
 }
 
 func integrationDisks(ctx context.Context, o Options) []Finding {
@@ -271,7 +292,7 @@ func integrationDisks(ctx context.Context, o Options) []Finding {
 		disks = append(disks, name)
 	}
 	if len(disks) == 0 {
-		return []Finding{integrationFinding("disk-inventory", "storage", "unknown", "No non-loop block devices identified")}
+		return []Finding{integrationFinding(Finding{ID: findingDiskInventory, Area: AreaStorage, Severity: SeverityUnknown, Summary: "No non-loop block devices identified"})}
 	}
 	sort.Strings(disks)
 	var inventory []string
@@ -285,47 +306,47 @@ func integrationDisks(ctx context.Context, o Options) []Finding {
 		}
 		inventory = append(inventory, label)
 	}
-	res := []Finding{integrationFinding("disk-inventory", "storage", "info", "Block devices identified (no serial numbers collected)", inventory...)}
+	res := []Finding{integrationFinding(Finding{ID: findingDiskInventory, Area: AreaStorage, Severity: SeverityInfo, Summary: "Block devices identified (no serial numbers collected)", Evidence: inventory})}
 	if !o.Privileged || os.Geteuid() != 0 {
-		return append(res, integrationFinding("disk-smart", "storage", "unknown", "SMART unavailable: requires Privileged option and effective root"))
+		return append(res, integrationFinding(Finding{ID: findingDiskSMART, Area: AreaStorage, Severity: SeverityUnknown, Summary: "SMART unavailable: requires Privileged option and effective root"}))
 	}
-	if _, err := exec.LookPath("smartctl"); err != nil {
-		return append(res, integrationFinding("disk-smart", "storage", "unknown", "SMART unavailable: smartctl not installed"))
+	if _, err := exec.LookPath(string(toolSmartctl)); err != nil {
+		return append(res, integrationFinding(Finding{ID: findingDiskSMART, Area: AreaStorage, Severity: SeverityUnknown, Summary: "SMART unavailable: smartctl not installed"}))
 	}
 	for _, d := range disks {
-		r := integrationRun(ctx, o.CommandTimeout, "smartctl", "-H", "/dev/"+d)
+		r := integrationRun(ctx, commandConfig{Timeout: o.CommandTimeout, Tool: toolSmartctl, Args: []string{"-H", "/dev/" + d}})
 		sev, summary, recognized := integrationSMARTStatus(string(r.stdout))
 		if recognized {
-			f := integrationFinding("smart-"+d, "storage", sev, summary)
-			if sev == "warning" {
+			f := integrationFinding(Finding{ID: "smart-" + d, Area: AreaStorage, Severity: sev, Summary: summary})
+			if sev == SeverityWarning {
 				f.Recommendation = "Back up important data and arrange disk diagnostics or replacement."
 			}
 			res = append(res, f)
 			continue
 		}
 		if r.err != nil {
-			res = append(res, integrationFinding("smart-"+d, "storage", "unknown", "SMART status unavailable"))
+			res = append(res, integrationFinding(Finding{ID: "smart-" + d, Area: AreaStorage, Severity: SeverityUnknown, Summary: "SMART status unavailable"}))
 			continue
 		}
-		res = append(res, integrationFinding("smart-"+d, "storage", "unknown", "SMART status unavailable or unrecognized"))
+		res = append(res, integrationFinding(Finding{ID: "smart-" + d, Area: AreaStorage, Severity: SeverityUnknown, Summary: "SMART status unavailable or unrecognized"}))
 	}
 	return res
 }
 
-func integrationSMARTStatus(output string) (severity, summary string, recognized bool) {
+func integrationSMARTStatus(output string) (severity Severity, summary string, recognized bool) {
 	for _, line := range strings.Split(strings.ToLower(output), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "smart overall-health self-assessment test result:") || strings.HasPrefix(line, "smart health status:") {
 			value := strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
 			if strings.HasPrefix(value, "failed") || strings.HasPrefix(value, "failure") {
-				return "warning", "SMART reports failure", true
+				return SeverityWarning, "SMART reports failure", true
 			}
 			if strings.HasPrefix(value, "passed") || strings.HasPrefix(value, "ok") {
-				return "ok", "SMART reports passed", true
+				return SeverityOK, "SMART reports passed", true
 			}
 		}
 	}
-	return "unknown", "SMART status unavailable or unrecognized", false
+	return SeverityUnknown, "SMART status unavailable or unrecognized", false
 }
 
 // Doctor reports platform, filesystem and optional-tool availability without running diagnostics.
@@ -348,15 +369,19 @@ func Doctor(ctx context.Context, o Options) []Check {
 		}
 		checks = append(checks, Check{Name: item.name, Available: err == nil, Detail: root})
 	}
-	for _, tool := range []string{"journalctl", "systemctl", "systemd-analyze", "powerprofilesctl", "sensors", "lspci", "smartctl"} {
-		_, err := exec.LookPath(tool)
-		detail := map[bool]string{true: tool, false: "unavailable"}[err == nil]
+	for _, tool := range []distroTool{toolJournalctl, toolSystemctl, toolSystemdAnalyze, toolPowerprofilesctl, toolSensors, toolLspci, toolSmartctl} {
+		toolName := string(tool)
+		_, err := exec.LookPath(toolName)
+		detail := "unavailable"
+		if err == nil {
+			detail = toolName
+		}
 		if err != nil {
-			if pkg := adapter.Package(tool); pkg != "" {
+			if pkg := adapter.Package(toolName); pkg != "" {
 				detail += "; optional package: " + pkg
 			}
 		}
-		checks = append(checks, Check{Name: tool, Available: err == nil, Detail: detail})
+		checks = append(checks, Check{Name: toolName, Available: err == nil, Detail: detail})
 	}
 	checks = append(checks, Check{Name: "privileged-smart", Available: os.Geteuid() == 0, Detail: fmt.Sprintf("effective uid %d", os.Geteuid())})
 	_ = ctx

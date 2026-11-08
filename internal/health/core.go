@@ -12,13 +12,6 @@ import (
 	"time"
 )
 
-const (
-	coreUnknown = SeverityUnknown
-	coreOK      = SeverityOK
-	coreWarn    = SeverityWarning
-	coreCrit    = SeverityCritical
-)
-
 type coreCPU struct{ total, idle uint64 }
 type coreProc struct {
 	pid   int
@@ -72,22 +65,17 @@ func collectCore(ctx context.Context, opts Options) Report {
 		etc = "/etc"
 	}
 	r := Report{SchemaVersion: "1", CollectedAt: started, System: SystemInfo{}, Findings: []Finding{}}
-	add := func(id string, area Area, sev Severity, summary string, evidence ...string) {
-		recommendation := map[string]string{"memory.capacity": "Review memory-heavy applications and available capacity.", "memory.swap": "Review swap configuration and workload memory needs.", "cpu.utilization": "Investigate sustained CPU saturation and competing workloads.", "process.cpu": "Review the listed process CPU consumers.", "thermal.temperature": "Check cooling, airflow, and thermal limits.", "thermal.throttle": "Check cooling and reduce sustained compute load if throttling continues.", "disk.root": "Free space or expand the root filesystem.", "disk.activity": "Correlate I/O activity with application workload.", "pressure.cpu": "Investigate CPU contention and runnable workload.", "pressure.memory": "Investigate memory pressure and reclaim activity.", "pressure.io": "Investigate storage latency and competing I/O."}[id]
-		if sev == coreUnknown {
-			recommendation = "Check that the relevant Linux procfs/sysfs data is mounted and readable."
-		}
-		if id == "workload.build" {
-			recommendation = "Reduce concurrent builds or other Java workloads if contention persists."
-		}
-		r.Findings = append(r.Findings, Finding{ID: id, Area: area, Severity: sev, Summary: summary, Evidence: evidence, Recommendation: recommendation, Confidence: map[Severity]Confidence{coreUnknown: ConfidenceLow, coreOK: ConfidenceMedium, coreWarn: ConfidenceMedium, coreCrit: ConfidenceHigh}[sev]})
+	add := func(f Finding) {
+		f.Recommendation = coreRecommendation(f.ID, f.Severity)
+		f.Confidence = coreConfidence(f.Severity)
+		r.Findings = append(r.Findings, f)
 	}
 	osRelease, _ := parseOSRelease(filepath.Join(etc, "os-release"))
 	r.System.OS = osRelease["PRETTY_NAME"]
 	adapter := selectDistroAdapter(osRelease["ID"])
 	r.System.DistroID = osRelease["ID"]
 	if r.System.DistroID == "" {
-		r.System.DistroID = string(coreUnknown)
+		r.System.DistroID = string(SeverityUnknown)
 	}
 	r.System.DistroAdapter = adapter.Name()
 	if version := osRelease["VERSION_ID"]; version != "" {
@@ -122,32 +110,32 @@ func collectCore(ctx context.Context, opts Options) Report {
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			add("cpu.utilization", "cpu", coreUnknown, "CPU sample cancelled")
+			add(Finding{ID: coreFindingCPUUtilization, Area: AreaCPU, Severity: SeverityUnknown, Summary: "CPU sample cancelled"})
 		case <-timer.C:
 			cpu1, e := coreReadCPU(filepath.Join(proc, "stat"))
 			if e != nil {
-				add("cpu.utilization", "cpu", coreUnknown, "CPU counters unavailable")
+				add(Finding{ID: coreFindingCPUUtilization, Area: AreaCPU, Severity: SeverityUnknown, Summary: "CPU counters unavailable"})
 			} else if cpu1.total <= cpu0.total || cpu1.idle < cpu0.idle || cpu1.idle-cpu0.idle > cpu1.total-cpu0.total {
-				add("cpu.utilization", "cpu", coreUnknown, "CPU counters did not advance")
+				add(Finding{ID: coreFindingCPUUtilization, Area: AreaCPU, Severity: SeverityUnknown, Summary: "CPU counters did not advance"})
 			} else {
 				totalDelta = cpu1.total - cpu0.total
 				validSample = true
 				used := 100 * (totalDelta - (cpu1.idle - cpu0.idle)) / totalDelta
-				severity := coreOK
+				severity := SeverityOK
 				if used >= 90 {
-					severity = coreWarn
+					severity = SeverityWarning
 				}
-				add("cpu.utilization", "cpu", severity, fmt.Sprintf("Sampled whole-machine CPU utilization: %d%%", used), fmt.Sprintf("utilization_percent=%d", used))
+				add(Finding{ID: coreFindingCPUUtilization, Area: AreaCPU, Severity: severity, Summary: fmt.Sprintf("Sampled whole-machine CPU utilization: %d%%", used), Evidence: []string{fmt.Sprintf("utilization_percent=%d", used)}})
 			}
 		}
 	} else {
-		add("cpu.utilization", "cpu", coreUnknown, "CPU counters unavailable")
+		add(Finding{ID: coreFindingCPUUtilization, Area: AreaCPU, Severity: SeverityUnknown, Summary: "CPU counters unavailable"})
 	}
 	if ctx.Err() == nil && validSample {
 		procs1 := coreReadProcs(proc)
 		rows := coreRankProcesses(procs0, procs1, totalDelta)
 		if len(rows) == 0 {
-			add("process.cpu", "process", coreUnknown, "Per-process CPU deltas unavailable")
+			add(Finding{ID: coreFindingProcessCPU, Area: AreaProcess, Severity: SeverityUnknown, Summary: "Per-process CPU deltas unavailable"})
 		} else {
 			if len(rows) > 10 {
 				rows = rows[:10]
@@ -156,7 +144,7 @@ func collectCore(ctx context.Context, opts Options) Report {
 			for _, row := range rows {
 				evidence = append(evidence, fmt.Sprintf("pid=%d comm=%q cpu_percent_whole_machine=%.2f ticks=%d", row.pid, row.name, row.percent, row.ticks))
 			}
-			add("process.cpu", "process", coreOK, "Sampled per-process CPU utilization (whole machine)", evidence...)
+			add(Finding{ID: coreFindingProcessCPU, Area: AreaProcess, Severity: SeverityOK, Summary: "Sampled per-process CPU utilization (whole machine)", Evidence: evidence})
 			java := 0
 			for _, row := range rows {
 				if row.ticks > 0 && (strings.Contains(strings.ToLower(row.name), "java") || strings.Contains(strings.ToLower(row.name), "gradle")) {
@@ -164,7 +152,7 @@ func collectCore(ctx context.Context, opts Options) Report {
 				}
 			}
 			if java > 1 {
-				add("workload.build", "workload", coreWarn, "Multiple active Java/Gradle-like processes observed; build activity is not confirmed", fmt.Sprintf("matching_processes=%d", java))
+				add(Finding{ID: coreFindingWorkloadBuild, Area: AreaWorkload, Severity: SeverityWarning, Summary: "Multiple active Java/Gradle-like processes observed; build activity is not confirmed", Evidence: []string{fmt.Sprintf("matching_processes=%d", java)}})
 			}
 		}
 	} else {
@@ -172,7 +160,7 @@ func collectCore(ctx context.Context, opts Options) Report {
 		if ctx.Err() != nil {
 			detail = "Per-process CPU sample cancelled"
 		}
-		add("process.cpu", "process", coreUnknown, detail)
+		add(Finding{ID: coreFindingProcessCPU, Area: AreaProcess, Severity: SeverityUnknown, Summary: detail})
 	}
 	coreMemory(proc, add)
 	corePressure(proc, add)
@@ -181,7 +169,7 @@ func collectCore(ctx context.Context, opts Options) Report {
 	coreDisk(proc, disk0, !validSample, add)
 	coreSwap(proc, vm0, !validSample, add)
 	if ctx.Err() != nil {
-		add("collection.cancelled", "core", coreUnknown, "Collection stopped before all samples completed")
+		add(Finding{ID: coreFindingCollectionCancelled, Area: AreaCore, Severity: SeverityUnknown, Summary: "Collection stopped before all samples completed"})
 	}
 	r.Duration = time.Since(started)
 	return r

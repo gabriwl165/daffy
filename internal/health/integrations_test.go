@@ -12,7 +12,7 @@ import (
 
 func TestIntegrationExecTimeout(t *testing.T) {
 	ctx := context.Background()
-	r := integrationExec(ctx, 50*time.Millisecond, "sleep", "5")
+	r := integrationExec(ctx, commandConfig{Timeout: 50 * time.Millisecond, Tool: distroTool("sh"), Args: []string{"-c", "sleep 5"}})
 	if r.err == nil {
 		t.Fatal("expected timeout")
 	}
@@ -28,7 +28,7 @@ func TestIntegrationSMARTRequiresExplicitOptIn(t *testing.T) {
 	}
 	old := integrationRun
 	defer func() { integrationRun = old }()
-	integrationRun = func(context.Context, time.Duration, string, ...string) integrationResult {
+	integrationRun = func(context.Context, commandConfig) integrationResult {
 		t.Fatal("SMART command ran without opt-in")
 		return integrationResult{}
 	}
@@ -42,7 +42,7 @@ func TestIntegrationCanceledCollectSkipsCommands(t *testing.T) {
 	old := integrationRun
 	defer func() { integrationRun = old }()
 	calls := 0
-	integrationRun = func(context.Context, time.Duration, string, ...string) integrationResult {
+	integrationRun = func(context.Context, commandConfig) integrationResult {
 		calls++
 		return integrationResult{err: errors.New("unexpected command")}
 	}
@@ -65,13 +65,13 @@ func TestIntegrationBoundedOutput(t *testing.T) {
 func TestIntegrationJournalPatternsAndPrivacy(t *testing.T) {
 	old := integrationRun
 	defer func() { integrationRun = old }()
-	integrationRun = func(_ context.Context, _ time.Duration, name string, args ...string) integrationResult {
-		if name != "journalctl" {
-			t.Fatalf("unexpected command %s", name)
+	integrationRun = func(_ context.Context, cfg commandConfig) integrationResult {
+		if cfg.Tool != toolJournalctl {
+			t.Fatalf("unexpected command %s", cfg.Tool)
 		}
 		return integrationResult{stdout: []byte("oom: oom_kill_disable enabled\nOut of memory: Killed process 42 (secret-user)\nNVRM: Xid GPU fault\nnouveau 0000:01:00.0: fifo: fault 01\nCPU0: Core temperature above threshold, cpu clock throttled\n")}
 	}
-	fs := integrationJournal(context.Background(), Options{}, "--boot", "current")
+	fs := integrationJournal(context.Background(), Options{}, journalCurrent)
 	if len(fs) != 1 || fs[0].Severity != "warning" {
 		t.Fatalf("unexpected findings: %+v", fs)
 	}
@@ -79,7 +79,7 @@ func TestIntegrationJournalPatternsAndPrivacy(t *testing.T) {
 	if strings.Contains(joined, "secret-user") || !strings.Contains(joined, "oom kills: 1") || !strings.Contains(joined, "GPU faults: 2") || !strings.Contains(joined, "thermal events: 1") {
 		t.Fatalf("privacy/pattern mismatch: %s", joined)
 	}
-	fs = integrationJournal(context.Background(), Options{IncludeSensitive: true}, "--boot", "current")
+	fs = integrationJournal(context.Background(), Options{IncludeSensitive: true}, journalCurrent)
 	if !strings.Contains(strings.Join(fs[0].Evidence, " "), "secret-user") {
 		t.Fatal("sensitive evidence not included")
 	}
@@ -88,10 +88,10 @@ func TestIntegrationJournalPatternsAndPrivacy(t *testing.T) {
 func TestIntegrationMissingJournalUnknown(t *testing.T) {
 	old := integrationRun
 	defer func() { integrationRun = old }()
-	integrationRun = func(context.Context, time.Duration, string, ...string) integrationResult {
+	integrationRun = func(context.Context, commandConfig) integrationResult {
 		return integrationResult{err: errors.New("missing")}
 	}
-	fs := integrationJournal(context.Background(), Options{}, "--boot=-1", "previous")
+	fs := integrationJournal(context.Background(), Options{}, journalPrevious)
 	if fs[0].Severity != "unknown" {
 		t.Fatalf("expected unknown, got %+v", fs)
 	}
@@ -101,8 +101,8 @@ func TestIntegrationJournalEmptyAndDiagnosticUnknown(t *testing.T) {
 	old := integrationRun
 	defer func() { integrationRun = old }()
 	for _, result := range []integrationResult{{stdout: []byte("\n")}, {stdout: []byte("some lines"), stderr: []byte("permission denied")}} {
-		integrationRun = func(context.Context, time.Duration, string, ...string) integrationResult { return result }
-		if got := integrationJournal(context.Background(), Options{}, "--boot", "current")[0].Severity; got != "unknown" {
+		integrationRun = func(context.Context, commandConfig) integrationResult { return result }
+		if got := integrationJournal(context.Background(), Options{}, journalCurrent)[0].Severity; got != "unknown" {
 			t.Fatalf("severity %q", got)
 		}
 	}
@@ -123,7 +123,7 @@ func TestIntegrationSMARTStatus(t *testing.T) {
 func TestIntegrationBootInterpretation(t *testing.T) {
 	old := integrationRun
 	defer func() { integrationRun = old }()
-	integrationRun = func(context.Context, time.Duration, string, ...string) integrationResult {
+	integrationRun = func(context.Context, commandConfig) integrationResult {
 		return integrationResult{stdout: []byte("Startup finished in 8s (firmware) + 1s (loader) + 3s (kernel) + 4s (userspace) = 16s\n")}
 	}
 	f := integrationBootTime(context.Background(), Options{})[0]
