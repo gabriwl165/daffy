@@ -52,6 +52,7 @@ func TestCollectDarwinCancellationIsReported(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r := collectDarwinWith(ctx, Options{}, func(context.Context, commandConfig) integrationResult {
+		t.Fatal("executor called after cancellation")
 		return integrationResult{err: errors.New("cancelled")}
 	})
 	for _, f := range r.Findings {
