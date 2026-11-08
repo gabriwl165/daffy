@@ -191,6 +191,26 @@ func TestAnalyzePreservesCommandDeadline(t *testing.T) {
 	}
 }
 
+func TestStderrClassificationIsAllowlistedAndPrivate(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want error
+	}{
+		{"permission denied while connecting", ErrPermission},
+		{"Cannot connect to the Docker daemon at tcp://localhost", ErrConnection},
+		{"unknown flag: --new-option", ErrUnsupported},
+		{"daemon failed with secret-token-123", nil},
+	} {
+		got := classifyStderr(tc.text)
+		if !errors.Is(got, tc.want) {
+			t.Fatalf("classify %q = %v, want %v", tc.text, got, tc.want)
+		}
+		if got != nil && strings.Contains(got.Error(), tc.text) {
+			t.Fatalf("raw stderr leaked: %v", got)
+		}
+	}
+}
+
 func TestDockerTimeoutIssueUsesSafeCommandIdentity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
