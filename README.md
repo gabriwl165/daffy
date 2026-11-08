@@ -3,14 +3,14 @@
 A read-only system health CLI, written in Go. Investigate overheating, freezes,
 resource contention, and slow boots without applying speculative “optimizations.”
 Designed for Zorin OS and Ubuntu; other Linux distributions may expose fewer checks.
-Initial macOS support targets Apple Silicon and exposes fewer signals than Linux.
+macOS support covers Intel and Apple Silicon and exposes fewer signals than Linux.
 
-## Install on Linux or Apple Silicon macOS
+## Install on Linux or macOS
 
-Linux on x86-64 or ARM64 and macOS on Apple Silicon can install a prebuilt
+Linux on x86-64 or ARM64 and macOS on Intel or Apple Silicon can install a prebuilt
 binary without Go or root access. The installer requires `curl`, `tar`, and
 `sha256sum` on Linux or `shasum` on macOS, plus standard system utilities.
-Intel macOS and Windows installation are not supported.
+Windows installation is not supported.
 
 Download the installer, inspect it, then run it:
 
@@ -214,9 +214,9 @@ executors to test errors and permissions without root or real hardware faults.
 CLI tests exercise routing, output, validation, and cancellation. Live scans
 are smoke tests only: they do not reproduce freezes or validate every device.
 
-CI runs the suite and installer fixtures on native Apple Silicon, verifies the
-runner architecture, and gates releases on that job. Linux also cross-builds
-Darwin ARM64 and Windows AMD64. Cross-builds alone do not prove runtime support.
+CI runs the suite and installer fixtures on native Intel and Apple Silicon Macs,
+verifies runner architectures, and gates releases on both jobs. Release builds
+include Darwin AMD64 and ARM64. Cross-builds alone do not prove runtime support.
 Installer fixture tests additionally require Python 3; the installer itself does not.
 
 ### Container smoke tests

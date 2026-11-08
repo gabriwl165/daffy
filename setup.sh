@@ -20,7 +20,6 @@ os=$(uname -s)
 case "$os" in Linux) platform=linux;; Darwin) platform=darwin;; *) fail "unsupported operating system: $os";; esac
 machine=$(uname -m)
 case "$machine" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) fail "unsupported architecture: $machine";; esac
-if [ "$platform" = darwin ] && [ "$arch" != arm64 ]; then fail "unsupported architecture on Darwin: $machine"; fi
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 for cmd in tar mktemp install mv awk wc tr; do command -v "$cmd" >/dev/null 2>&1 || fail "$cmd is required"; done
 if [ "$platform" = darwin ]; then
