@@ -20,10 +20,20 @@ const (
 	Smartctl         Tool = "smartctl"
 )
 
+type Package string
+
+const (
+	PackageSystemd             Package = "systemd"
+	PackagePowerProfilesDaemon Package = "power-profiles-daemon"
+	PackageLMSensors           Package = "lm-sensors"
+	PackagePCIUtils            Package = "pciutils"
+	PackageSmartmontools       Package = "smartmontools"
+)
+
 type Profile struct {
 	ID       ID
-	Packages map[Tool]string
+	Packages map[Tool]Package
 }
 
 func (p Profile) Name() string               { return string(p.ID) }
-func (p Profile) Package(tool string) string { return p.Packages[Tool(tool)] }
+func (p Profile) Package(tool string) string { return string(p.Packages[Tool(tool)]) }
