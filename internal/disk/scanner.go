@@ -154,7 +154,6 @@ func (s *scanner) Scan(ctx context.Context, c Config) (Report, error) {
 				}
 			}
 			f.Close()
-			report.Coverage.Files++
 		} else if fi.Mode().IsRegular() {
 			report.Coverage.Files++
 		}
