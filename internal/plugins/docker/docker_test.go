@@ -46,7 +46,7 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 
 func TestNativeDiskAndStats(t *testing.T) {
 	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	r := &fakeRunner{outputs: [][]byte{[]byte(`{"Type":"Images","TotalCount":"3","Active":"1","Size":"1.2GB","Reclaimable":"100MB (10%)"}`), []byte(`{"ID":"` + id + `","Name":"web","CPUPerc":"0.1%","MemUsage":"1MiB / 2MiB","MemPerc":"50%","NetIO":"1kB / 2kB","BlockIO":"0B / 0B","PIDs":"1"}`)}}
+	r := &fakeRunner{outputs: [][]byte{[]byte(`{"Type":"Images","TotalCount":"3","Active":"1","Size":"1.2GB","Reclaimable":"100MB (10%)"}`), []byte(`{"ID":"` + id + `","Names":"web"}`), []byte(id + "\n"), []byte(`{"ID":"` + id + `","Name":"web","CPUPerc":"0.1%","MemUsage":"1MiB / 2MiB","MemPerc":"50%","NetIO":"1kB / 2kB","BlockIO":"0B / 0B","PIDs":"1"}`)}}
 	p := New(r)
 	disk, e := p.Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
 	if e != nil || disk.Details.Docker.DiskUsage[0].TotalCount != 3 {
@@ -56,8 +56,30 @@ func TestNativeDiskAndStats(t *testing.T) {
 	if e != nil || runtime.Details.Docker.Runtime[0].CPUPerc != "0.1%" {
 		t.Fatalf("runtime: %#v %v", runtime, e)
 	}
-	if strings.Join(r.args[0], " ") != "system df --format {{json .}}" || !containsArg(r.args[1], "--no-trunc") {
+	if strings.Join(r.args[0], " ") != "system df --format {{json .}}" || !containsArg(r.args[3], "--no-trunc") {
 		t.Fatalf("unexpected CLI args: %#v", r.args)
+	}
+}
+
+func TestTargetSelectionContextAndNoUnqualifiedStats(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	r := &fakeRunner{outputs: [][]byte{[]byte(`{"ID":"` + id + `","Names":"api"}`), []byte(id + "\n"), []byte(`{"ID":"` + id + `","Name":"api","CPUPerc":"1%","MemUsage":"1/2","MemPerc":"50%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)}}
+	_, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Context: "dev", Containers: []string{"api"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsArg(r.args[0], "--context") || !containsArg(r.args[0], "dev") || !containsArg(r.args[2], "--") {
+		t.Fatalf("context/positional args: %#v", r.args)
+	}
+	r = &fakeRunner{outputs: [][]byte{[]byte(`{"ID":"` + id + `","Names":"api"}`)}}
+	_, err = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Containers: []string{"missing"}}})
+	if !errors.Is(err, plugins.ErrInvalid) || r.calls != 1 {
+		t.Fatalf("unmatched selector ran unsafe command: calls=%d err=%v", r.calls, err)
+	}
+	for _, bad := range []string{"bad;docker", "--help"} {
+		if _, err = New(&fakeRunner{}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig, Options: plugins.Options{Context: bad}}); !errors.Is(err, plugins.ErrInvalid) {
+			t.Fatalf("context %q: %v", bad, err)
+		}
 	}
 }
 func containsArg(args []string, want string) bool {

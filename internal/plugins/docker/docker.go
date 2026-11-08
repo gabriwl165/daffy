@@ -194,11 +194,22 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
+	if validateTargetOptions(req.Options) != nil || req.Options.Project != "" {
+		return plugins.Outcome{}, plugins.ErrInvalid
+	}
 	if req.Operation != plugins.OperationDisk && req.Operation != plugins.OperationRuntime && req.Operation != plugins.OperationConfig {
 		return plugins.Outcome{}, plugins.ErrUnknownOperation
 	}
+	if len(req.Options.Containers) > 0 && req.Operation == plugins.OperationDisk {
+		return plugins.Outcome{}, plugins.ErrInvalid
+	}
 	d := &plugins.DockerDetails{Context: "CLI-selected Docker daemon; snapshot is non-atomic"}
+	if req.Options.Context != "" {
+		d.Context = req.Options.Context + " Docker CLI context; snapshot is non-atomic"
+	}
 	o.Details.Docker = d
+	ctx = context.WithValue(ctx, requestRunnerKey{}, scopedRunner{base: p.runner, context: req.Options.Context})
+	ctx = context.WithValue(ctx, selectorKey{}, append([]string(nil), req.Options.Containers...))
 	var err error
 	switch req.Operation {
 	case plugins.OperationDisk:
@@ -225,7 +236,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 }
 
 func (p *Plugin) call(ctx context.Context, command string, args ...string) ([]byte, error) {
-	b, e := p.runner.Run(ctx, args...)
+	b, e := runnerFor(ctx, p.runner).Run(ctx, args...)
 	if e != nil {
 		if ctx.Err() != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -319,7 +330,34 @@ type diskRow struct {
 }
 
 func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
-	b, e := p.call(ctx, "docker stats", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}")
+	ids, e := p.selectContainers(ctx, targetSelectors(ctx))
+	if e != nil {
+		failCommand(o, issueListUnavailable, e)
+		return e
+	}
+	running := []string{}
+	if len(ids) > 0 {
+		b, e := p.call(ctx, "docker ps", "ps", "--no-trunc", "--quiet")
+		if e != nil {
+			failCommand(o, issueListUnavailable, e)
+			return e
+		}
+		for _, id := range strings.Fields(string(b)) {
+			if !validID(id) {
+				fail(o, issueIDInvalid)
+				return ErrInvalidResponse
+			}
+			if contains(ids, id) {
+				running = append(running, id)
+			}
+		}
+	}
+	if len(running) == 0 {
+		d.Runtime = []plugins.DockerContainerStats{}
+		return nil
+	}
+	args := append([]string{"stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", "--"}, running...)
+	b, e := p.call(ctx, "docker stats", args...)
 	if e != nil {
 		failCommand(o, issueRuntimeUnavailable, e)
 		return e
@@ -355,12 +393,11 @@ var fullID = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 func validID(s string) bool { return fullID.MatchString(s) }
 func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
-	b, e := p.call(ctx, "docker ps", "ps", "--all", "--quiet", "--no-trunc")
+	ids, e := p.selectContainers(ctx, targetSelectors(ctx))
 	if e != nil {
 		failCommand(o, issueListUnavailable, e)
 		return e
 	}
-	ids := strings.Fields(string(b))
 	if len(ids) > maxContainers {
 		fail(o, issueContainerLimit)
 		return errors.New("Docker container count exceeded limit")

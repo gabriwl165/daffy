@@ -47,9 +47,12 @@ var (
 )
 
 type Options struct {
-	Path     string   `json:"path,omitempty"`
-	Excludes []string `json:"excludes,omitempty"`
-	TopN     int      `json:"top_n,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	Excludes   []string `json:"excludes,omitempty"`
+	TopN       int      `json:"top_n,omitempty"`
+	Context    string   `json:"context,omitempty"`
+	Containers []string `json:"containers,omitempty"`
+	Project    string   `json:"project,omitempty"`
 }
 type Request struct {
 	Operation OperationID `json:"operation,omitempty"`
