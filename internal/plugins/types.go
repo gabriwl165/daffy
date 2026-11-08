@@ -47,25 +47,31 @@ var (
 )
 
 type Options struct {
-	Path       string   `json:"path,omitempty"`
-	Excludes   []string `json:"excludes,omitempty"`
-	TopN       int      `json:"top_n,omitempty"`
-	Context    string   `json:"context,omitempty"`
-	Containers []string `json:"containers,omitempty"`
-	Project    string   `json:"project,omitempty"`
+	Path            string        `json:"path,omitempty"`
+	Excludes        []string      `json:"excludes,omitempty"`
+	TopN            int           `json:"top_n,omitempty"`
+	Context         string        `json:"context,omitempty"`
+	Containers      []string      `json:"containers,omitempty"`
+	Project         string        `json:"project,omitempty"`
+	Samples         int           `json:"samples,omitempty"`
+	Interval        time.Duration `json:"interval,omitempty"`
+	RuntimeTop      int           `json:"runtime_top,omitempty"`
+	CPUThreshold    float64       `json:"cpu_threshold,omitempty"`
+	MemoryThreshold float64       `json:"memory_threshold,omitempty"`
 }
 type Request struct {
 	Operation OperationID `json:"operation,omitempty"`
 	Options   Options     `json:"options,omitempty"`
 }
 type SupportedOptions struct {
-	Path        bool `json:"path,omitempty"`
-	Excludes    bool `json:"excludes,omitempty"`
-	TopN        bool `json:"top_n,omitempty"`
-	RequirePath bool `json:"require_path,omitempty"`
-	Context     bool `json:"context,omitempty"`
-	Containers  bool `json:"containers,omitempty"`
-	Project     bool `json:"project,omitempty"`
+	Path          bool `json:"path,omitempty"`
+	Excludes      bool `json:"excludes,omitempty"`
+	TopN          bool `json:"top_n,omitempty"`
+	RequirePath   bool `json:"require_path,omitempty"`
+	Context       bool `json:"context,omitempty"`
+	Containers    bool `json:"containers,omitempty"`
+	Project       bool `json:"project,omitempty"`
+	RuntimeTrends bool `json:"runtime_trends,omitempty"`
 }
 type Operation struct {
 	ID      OperationID      `json:"id"`
@@ -102,6 +108,15 @@ type DockerDiskUsage struct {
 	Active      int64  `json:"active"`
 	Size        string `json:"size"`
 	Reclaimable string `json:"reclaimable"`
+}
+type DockerDiskBreakdown struct {
+	Category string             `json:"category"`
+	Details  []DockerDiskObject `json:"details,omitempty"`
+}
+type DockerDiskObject struct {
+	ID          string `json:"id"`
+	Size        string `json:"size"`
+	Reclaimable bool   `json:"reclaimable"`
 }
 type DockerContainerStats struct {
 	ID       string `json:"id"`
@@ -142,6 +157,19 @@ type DockerDetails struct {
 	Config        []DockerContainerConfig `json:"config,omitempty"`
 	Context       string                  `json:"context,omitempty"`
 	ComposeGroups []DockerComposeGroup    `json:"compose_groups,omitempty"`
+	RuntimeTrend  *DockerRuntimeTrend     `json:"runtime_trend,omitempty"`
+}
+type DockerRuntimeTrend struct {
+	SampleCount int                      `json:"sample_count"`
+	Containers  []DockerRuntimeTrendItem `json:"containers,omitempty"`
+}
+type DockerRuntimeTrendItem struct {
+	ID                      string  `json:"id"`
+	Name                    string  `json:"name"`
+	PeakCPUPercent          float64 `json:"peak_cpu_percent"`
+	PeakMemoryPercent       float64 `json:"peak_memory_percent"`
+	CPUThresholdExceeded    bool    `json:"cpu_threshold_exceeded"`
+	MemoryThresholdExceeded bool    `json:"memory_threshold_exceeded"`
 }
 type BazelDetails struct {
 	Disk *disk.Report `json:"disk,omitempty"`
@@ -292,7 +320,8 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 	}
 	for _, op := range selected {
 		opts := req.Options
-		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || (op.Options.RequirePath && opts.Path == "") {
+		trendOptions := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0
+		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)
 		}
 	}

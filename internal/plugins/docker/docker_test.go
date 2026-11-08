@@ -100,6 +100,23 @@ func TestComposeProjectGroupingAndFiltering(t *testing.T) {
 		t.Fatal("raw labels leaked")
 	}
 }
+
+func TestRuntimeSamplesRankPeaksAndKeepChurn(t *testing.T) {
+	id1 := strings.Repeat("a", 64)
+	id2 := strings.Repeat("b", 64)
+	row := func(id, cpu string) []byte {
+		return []byte(`{"ID":"` + id + `","Name":"web","CPUPerc":"` + cpu + `%","MemUsage":"1MiB / 2MiB","MemPerc":"50%","NetIO":"1kB / 2kB","BlockIO":"0B / 0B","PIDs":"1"}`)
+	}
+	r := &fakeRunner{outputs: [][]byte{row(id1, "12"), row(id2, "15")}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 2, Interval: 100 * time.Millisecond, RuntimeTop: 1, CPUThreshold: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trend := o.Details.Docker.RuntimeTrend
+	if trend == nil || trend.SampleCount != 2 || len(trend.Containers) != 1 || trend.Containers[0].ID != id2 || !trend.Containers[0].CPUThresholdExceeded {
+		t.Fatalf("trend: %#v", trend)
+	}
+}
 func containsArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {
