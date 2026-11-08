@@ -263,7 +263,19 @@ func failCommand(o *plugins.Outcome, code string, err error) {
 		case errors.Is(err, ErrUnsupported):
 			code = "docker_operation_unsupported"
 		}
-		fail(o, code)
+		summary := "Docker data could not be read or validated"
+		switch {
+		case errors.Is(err, ErrUnavailable):
+			summary = "Docker CLI is unavailable; install Docker CLI and ensure it is on PATH"
+		case errors.Is(err, ErrPermission):
+			summary = "Docker access was denied; check daemon/socket permissions or user group membership"
+		case errors.Is(err, ErrConnection):
+			summary = "Docker daemon is unreachable; check that the daemon is running and the selected context is valid"
+		case errors.Is(err, ErrUnsupported):
+			summary = "Docker CLI or daemon does not support this operation; check the installed Docker version"
+		}
+		o.Issues = append(o.Issues, plugins.Issue{Code: code, Summary: summary})
+		o.Status = plugins.StatusPartial
 	}
 }
 func (p *Plugin) disk(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {

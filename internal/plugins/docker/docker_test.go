@@ -211,6 +211,33 @@ func TestStderrClassificationIsAllowlistedAndPrivate(t *testing.T) {
 	}
 }
 
+func TestClassifiedCommandErrorsUseFixedIssues(t *testing.T) {
+	for _, tc := range []struct {
+		err        error
+		code, text string
+	}{
+		{ErrUnavailable, "docker_cli_unavailable", "Docker CLI is unavailable"},
+		{ErrPermission, "docker_permission_denied", "Docker access was denied"},
+		{ErrConnection, "docker_daemon_unreachable", "Docker daemon is unreachable"},
+		{ErrUnsupported, "docker_operation_unsupported", "does not support this operation"},
+	} {
+		o, err := New(&fakeRunner{errs: []error{tc.err}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
+		if err == nil || len(o.Issues) != 1 || o.Issues[0].Code != tc.code || !strings.Contains(o.Issues[0].Summary, tc.text) {
+			t.Fatalf("outcome=%+v err=%v", o, err)
+		}
+		b, _ := json.Marshal(o)
+		if strings.Contains(string(b), "private") {
+			t.Fatalf("raw diagnostic leaked: %s", b)
+		}
+	}
+	r := NewCommandRunner()
+	r.Binary = "/definitely/missing/docker-cli"
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
+	if !errors.Is(err, ErrUnavailable) || len(o.Issues) != 1 || !strings.Contains(o.Issues[0].Summary, "install Docker CLI") {
+		t.Fatalf("missing CLI outcome=%+v err=%v", o, err)
+	}
+}
+
 func TestDockerTimeoutIssueUsesSafeCommandIdentity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
