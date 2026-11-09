@@ -24,13 +24,13 @@ func addCrashDiagnostic(ctx context.Context, p *Plugin, d *plugins.DockerDetails
 	classification := plugins.DockerCrashClassification("")
 	code := plugins.DockerCrashCode("")
 	switch {
-	case s.Status == "restarting":
+	case plugins.DockerCrashState(s.Status) == plugins.DockerCrashStateRestarting:
 		classification, code = plugins.DockerCrashCurrentRestart, plugins.DockerCrashCodeRestarting
 	case s.OOMKilled != nil && *s.OOMKilled:
 		classification, code = plugins.DockerCrashRecordedOOM, plugins.DockerCrashCodeOOM
-	case s.Status == "running" && s.Health != nil && s.Health.Status == "unhealthy":
+	case plugins.DockerCrashState(s.Status) == plugins.DockerCrashStateRunning && s.Health != nil && plugins.DockerCrashState(s.Health.Status) == plugins.DockerCrashStateUnhealthy:
 		classification, code = plugins.DockerCrashUnhealthy, plugins.DockerCrashCodeUnhealthy
-	case (s.Status == "exited" || s.Status == "dead") && s.ExitCode != nil && *s.ExitCode != 0:
+	case (plugins.DockerCrashState(s.Status) == plugins.DockerCrashStateExited || plugins.DockerCrashState(s.Status) == plugins.DockerCrashStateDead) && s.ExitCode != nil && *s.ExitCode != 0:
 		classification, code = plugins.DockerCrashNonzeroExit, plugins.DockerCrashCodeExit
 	case cfg.RestartCount > 0:
 		classification, code = plugins.DockerCrashHistoricalRestart, plugins.DockerCrashCodeRestartHistory
@@ -38,10 +38,10 @@ func addCrashDiagnostic(ctx context.Context, p *Plugin, d *plugins.DockerDetails
 		return nil
 	}
 	state := plugins.DockerCrashStateStopped
-	if s.Status == "running" {
+	if plugins.DockerCrashState(s.Status) == plugins.DockerCrashStateRunning {
 		state = plugins.DockerCrashStateRunning
 	}
-	if s.Status == "restarting" {
+	if plugins.DockerCrashState(s.Status) == plugins.DockerCrashStateRestarting {
 		state = plugins.DockerCrashStateRestarting
 	}
 	diag := plugins.DockerCrashDiagnostic{ContainerID: cfg.ID, Name: cfg.Name, State: state, Classification: classification, Code: code, RestartCount: cfg.RestartCount, ExitCode: s.ExitCode, OOMKilled: s.OOMKilled, Project: cfg.Project, Service: cfg.Service, Recommendation: "Review the recorded state and bounded evidence; confirm the cause before changing configuration or restarting."}

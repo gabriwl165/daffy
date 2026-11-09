@@ -20,29 +20,30 @@ import (
 )
 
 const (
-	outputLimit             = 4 << 20
-	inspectBatch            = 50
-	commandTimeout          = 30 * time.Second
-	waitDelay               = 2 * time.Second
-	maxContainers           = 10000
-	issueDiskInvalid        = "docker_disk_invalid"
-	issueDiskUnavailable    = "docker_disk_unavailable"
-	issueRuntimeInvalid     = "docker_runtime_invalid"
-	issueRuntimeUnavailable = "docker_runtime_unavailable"
-	issueListUnavailable    = "docker_list_unavailable"
-	issueContainerLimit     = "docker_container_limit"
-	issueIDInvalid          = "docker_id_invalid"
-	issueInspectUnavailable = "docker_inspect_unavailable"
-	issueInspectInvalid     = "docker_inspect_invalid"
-	issueInspectIncomplete  = "docker_inspect_incomplete"
-	issueHostConfigUnknown  = "docker_host_config_unknown"
-	issueInspectMissing     = "docker_inspect_missing"
-	findingPrivileged       = "docker_privileged"
-	findingUnlimitedMemory  = "docker_memory_unlimited"
-	findingUnhealthy        = "docker_container_unhealthy"
-	findingContainerFailure = "docker_container_failure"
-	stateUnhealthy          = "unhealthy"
-	stateRestarting         = "restarting"
+	outputLimit                  = 4 << 20
+	inspectBatch                 = 50
+	commandTimeout               = 30 * time.Second
+	waitDelay                    = 2 * time.Second
+	maxContainers                = 10000
+	issueDiskInvalid             = "docker_disk_invalid"
+	issueDiskUnavailable         = "docker_disk_unavailable"
+	issueRuntimeInvalid          = "docker_runtime_invalid"
+	issueRuntimeUnavailable      = "docker_runtime_unavailable"
+	issueListUnavailable         = "docker_list_unavailable"
+	issueContainerLimit          = "docker_container_limit"
+	issueIDInvalid               = "docker_id_invalid"
+	issueInspectUnavailable      = "docker_inspect_unavailable"
+	issueInspectInvalid          = "docker_inspect_invalid"
+	issueInspectIncomplete       = "docker_inspect_incomplete"
+	issueHostConfigUnknown       = "docker_host_config_unknown"
+	issueInspectMissing          = "docker_inspect_missing"
+	issueCrashEvidenceIncomplete = "docker_crash_evidence_incomplete"
+	findingPrivileged            = "docker_privileged"
+	findingUnlimitedMemory       = "docker_memory_unlimited"
+	findingUnhealthy             = "docker_container_unhealthy"
+	findingContainerFailure      = "docker_container_failure"
+	stateUnhealthy               = string(plugins.DockerCrashStateUnhealthy)
+	stateRestarting              = string(plugins.DockerCrashStateRestarting)
 )
 
 var (
@@ -150,6 +151,9 @@ func (r *CommandRunner) run(ctx context.Context, mergeStderr bool, args ...strin
 	}
 	if mergeStderr {
 		_, _ = out.Write(errOut.buffer.Bytes())
+		if out.exceeded {
+			return nil, ErrOutputLimit
+		}
 	}
 	return out.buffer.Bytes(), nil
 }
@@ -283,12 +287,28 @@ func (p *Plugin) call(ctx context.Context, command string, args ...string) ([]by
 }
 func (p *Plugin) callLogs(ctx context.Context, args ...string) ([]byte, error) {
 	r := runnerFor(ctx, p.runner)
+	var b []byte
+	var e error
 	if capable, ok := r.(interface {
 		RunWithStderr(context.Context, ...string) ([]byte, error)
 	}); ok {
-		return capable.RunWithStderr(ctx, args...)
+		b, e = capable.RunWithStderr(ctx, args...)
+	} else {
+		b, e = r.Run(ctx, args...)
 	}
-	return r.Run(ctx, args...)
+	if e != nil {
+		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, &commandTimeoutError{command: "docker logs", err: ctx.Err()}
+			}
+			return nil, ctx.Err()
+		}
+		if errors.Is(e, context.DeadlineExceeded) {
+			return nil, &commandTimeoutError{command: "docker logs", err: e}
+		}
+		return nil, e
+	}
+	return b, nil
 }
 func fail(o *plugins.Outcome, code string) {
 	o.Issues = append(o.Issues, plugins.Issue{Code: code, Summary: "Docker data could not be read or validated"})
@@ -521,7 +541,6 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				cfg.Health = c.State.Health.Status
 			}
 			if c.HostConfig != nil {
-				_ = c.HostConfig.RestartPolicy.Name
 				cfg.MemoryLimit = c.HostConfig.Memory
 				cfg.NanoCPUs = c.HostConfig.NanoCPUs
 				cfg.PIDsLimit = c.HostConfig.PidsLimit
@@ -536,7 +555,7 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 			}
 			d.Config = append(d.Config, cfg)
 			if crashErr := addCrashDiagnostic(ctx, p, d, c, cfg); crashErr != nil {
-				fail(o, "docker_crash_evidence_incomplete")
+				fail(o, issueCrashEvidenceIncomplete)
 				aggregate = errors.Join(aggregate, crashErr)
 				if ctx.Err() != nil {
 					return errors.Join(aggregate, ctx.Err())
@@ -582,11 +601,28 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 	}
 	sort.Slice(d.Crashes, func(i, j int) bool {
 		if d.Crashes[i].Classification != d.Crashes[j].Classification {
-			return d.Crashes[i].Classification < d.Crashes[j].Classification
+			return crashPriority(d.Crashes[i].Classification) < crashPriority(d.Crashes[j].Classification)
 		}
 		return d.Crashes[i].ContainerID < d.Crashes[j].ContainerID
 	})
 	return nil
+}
+
+func crashPriority(c plugins.DockerCrashClassification) int {
+	switch c {
+	case plugins.DockerCrashCurrentRestart:
+		return 0
+	case plugins.DockerCrashRecordedOOM:
+		return 1
+	case plugins.DockerCrashUnhealthy:
+		return 2
+	case plugins.DockerCrashNonzeroExit:
+		return 3
+	case plugins.DockerCrashHistoricalRestart:
+		return 4
+	default:
+		return 5
+	}
 }
 
 func contains(values []string, value string) bool {

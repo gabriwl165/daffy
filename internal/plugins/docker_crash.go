@@ -10,6 +10,9 @@ const (
 	DockerCrashStateRestarting    DockerCrashState          = "restarting"
 	DockerCrashStateRunning       DockerCrashState          = "running"
 	DockerCrashStateStopped       DockerCrashState          = "stopped"
+	DockerCrashStateExited        DockerCrashState          = "exited"
+	DockerCrashStateDead          DockerCrashState          = "dead"
+	DockerCrashStateUnhealthy     DockerCrashState          = "unhealthy"
 	DockerCrashCurrentRestart     DockerCrashClassification = "current_restart"
 	DockerCrashRecordedOOM        DockerCrashClassification = "recorded_oom"
 	DockerCrashUnhealthy          DockerCrashClassification = "currently_unhealthy"
@@ -40,7 +43,6 @@ type DockerCrashDiagnostic struct {
 	Evidence            string                    `json:"evidence,omitempty"`
 	HealthLog           []DockerHealthLogEntry    `json:"health_log,omitempty"`
 	RecentLogs          []string                  `json:"recent_logs,omitempty"`
-	RecentFailureEvents int                       `json:"recent_failure_events,omitempty"`
 	RecentDieEvents     int                       `json:"recent_die_events,omitempty"`
 	RecentStartEvents   int                       `json:"recent_start_events,omitempty"`
 	RecentRestartEvents int                       `json:"recent_restart_events,omitempty"`

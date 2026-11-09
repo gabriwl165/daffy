@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -84,5 +85,57 @@ func TestLogTailRequiresOptIn(t *testing.T) {
 	p := New(&fakeRunner{})
 	if _, err := p.Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig, Options: plugins.Options{LogTail: 10}}); err == nil {
 		t.Fatal("log tail without investigation accepted")
+	}
+}
+
+func TestAnalyzeScopedCommandRunnerMergesLogsAndContext(t *testing.T) {
+	id := strings.Repeat("d", 64)
+	path := t.TempDir() + "/docker"
+	script := `#!/bin/sh
+case "$*" in
+  *"ps --all"*) printf '{"ID":"` + id + `","Names":"svc"}\n' ;;
+  *"container inspect"*) printf '[{"Id":"` + id + `","Name":"/svc","State":{"Status":"exited","ExitCode":1},"HostConfig":{"Memory":1,"Privileged":false}}]' ;;
+  *"logs"*) printf 'visible stdout\n'; printf 'context=%s stderr evidence\n' "$*" >&2 ;;
+  *"events"*) printf 'die\n' ;;
+esac
+`
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := &CommandRunner{Binary: path}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig, Options: plugins.Options{Context: "dev", CrashInvestigation: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := strings.Join(o.Details.Docker.Crashes[0].RecentLogs, "\n")
+	if !strings.Contains(logs, "stderr evidence") || !strings.Contains(logs, "--context dev") {
+		t.Fatalf("scoped log stderr/context missing: %q", logs)
+	}
+}
+
+func TestCombinedOutputLimitAndEvidenceCancellation(t *testing.T) {
+	path := t.TempDir() + "/out"
+	_ = os.WriteFile(path, []byte("#!/bin/sh\nprintf 123456\nprintf 7890 >&2\n"), 0700)
+	if _, err := (&CommandRunner{Binary: path, OutputLimit: 8}).RunWithStderr(context.Background()); !errors.Is(err, ErrOutputLimit) {
+		t.Fatalf("combined output cap: %v", err)
+	}
+	id := strings.Repeat("e", 64)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := runnerFunc(func(callCtx context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "ps":
+			return []byte(`{"ID":"` + id + `","Names":"svc"}`), nil
+		case "container":
+			return []byte(`[{"Id":"` + id + `","Name":"/svc","State":{"Status":"exited","ExitCode":2},"HostConfig":{"Memory":1,"Privileged":false}}]`), nil
+		case "logs":
+			cancel()
+			return nil, callCtx.Err()
+		}
+		return nil, nil
+	})
+	o, err := New(r).Analyze(ctx, plugins.Request{Operation: plugins.OperationConfig, Options: plugins.Options{CrashInvestigation: true}})
+	if err == nil || len(o.Details.Docker.Config) != 1 || o.Status != plugins.StatusCancelled || len(o.Details.Docker.Crashes) != 1 {
+		t.Fatalf("cancellation lost partial config: %#v %v", o, err)
 	}
 }
