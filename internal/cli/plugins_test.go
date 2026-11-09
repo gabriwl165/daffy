@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -333,7 +334,7 @@ func TestDockerConciseAndVerboseText(t *testing.T) {
 	if err := printPluginReport(&full, r, true); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(full.String(), "full-detail") || !strings.Contains(full.String(), "Context: dev") {
+	if !strings.Contains(full.String(), "full-detail") || !strings.Contains(full.String(), "Context: dev") || strings.Count(full.String(), "Context:") != 1 {
 		t.Fatalf("verbose output omitted legacy detail: %q", full.String())
 	}
 }
@@ -354,12 +355,139 @@ func TestDockerSummaryRanksRuntimeWithoutMutatingReport(t *testing.T) {
 	}
 }
 
+func TestShortenKnownIDsRespectsUnicodeAndTokenBoundaries(t *testing.T) {
+	const id = "1234567890abcdef"
+	for _, text := range []string{"x" + id + "x", "é" + id + "é", id + "-suffix", "prefix_" + id} {
+		if got := shortenKnownIDs(text, []string{id}); got != text {
+			t.Errorf("changed non-token ID occurrence %q to %q", text, got)
+		}
+	}
+	if got := shortenKnownIDs("("+id+")", []string{id}); got != "(1234567890ab)" {
+		t.Fatalf("short ID = %q", got)
+	}
+}
+
 func TestDockerOperationDescriptorDefaultOrder(t *testing.T) {
 	d, ok := DefaultDeps().Plugins.Lookup(plugins.PluginDocker)
 	if !ok || len(d.Operations) < 3 || d.Operations[0].ID != plugins.OperationConfig || d.Operations[1].ID != plugins.OperationRuntime || d.Operations[2].ID != plugins.OperationDisk {
 		t.Fatalf("Docker operation order: %+v", d.Operations)
 	}
 }
+
+func TestDockerProfilingFlagsRouteAndRejectBadScope(t *testing.T) {
+	ops := []plugins.Operation{op(plugins.OperationConfig, true, plugins.SupportedOptions{CrashInvestigation: true}), op(plugins.OperationRuntime, true, plugins.SupportedOptions{MemoryDetails: true, RuntimeSort: true}), op(plugins.OperationDisk, true, plugins.SupportedOptions{DiskDetails: true, StorageAnalysis: true})}
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: ops}}
+	code, _, errText := runFake(t, p, "config", "--investigate", "--log-tail=25")
+	if code != 0 || errText != "" || p.calls[0].Options.LogTail != 25 || !p.calls[0].Options.CrashInvestigation {
+		t.Fatalf("config routing: code=%d err=%q req=%#v", code, errText, p.calls)
+	}
+	code, _, _ = runFake(t, p, "runtime", "--memory-details", "--runtime-sort=memory")
+	if code != 0 || !p.calls[len(p.calls)-1].Options.MemoryDetails || p.calls[len(p.calls)-1].Options.RuntimeSort != plugins.DockerRuntimeSortMemory {
+		t.Fatalf("runtime routing code=%d calls=%#v", code, p.calls)
+	}
+	code, _, _ = runFake(t, p, "disk", "--image-filter=unused", "--disk-sort=unique-size", "--host-capacity")
+	if code != 0 || !p.calls[len(p.calls)-1].Options.DiskDetails || p.calls[len(p.calls)-1].Options.ImageFilter != plugins.DockerImageFilterUnused || p.calls[len(p.calls)-1].Options.DiskSort != plugins.DockerDiskSortUniqueSize || !p.calls[len(p.calls)-1].Options.HostCapacity {
+		t.Fatalf("disk routing code=%d calls=%#v", code, p.calls)
+	}
+	for _, args := range [][]string{{"config", "--log-tail=0", "--investigate"}, {"config", "--log-tail=2"}, {"runtime", "--runtime-sort="}, {"runtime", "--runtime-sort=bad"}, {"disk", "--disk-sort="}, {"disk", "--image-filter=bad"}, {"runtime", "--image-filter=all"}, {"config", "--memory-details"}, {"--investigate"}} {
+		p.calls = nil
+		code, _, _ = runFake(t, p, args...)
+		if code == 0 || len(p.calls) != 0 {
+			t.Errorf("accepted %v code=%d calls=%d", args, code, len(p.calls))
+		}
+	}
+}
+
+func TestDockerObservedBundleStreamsBeforeDiskAndOnlyOnce(t *testing.T) {
+	var out bytes.Buffer
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationConfig, true, plugins.SupportedOptions{}), op(plugins.OperationRuntime, true, plugins.SupportedOptions{}), op(plugins.OperationDisk, true, plugins.SupportedOptions{})}}}
+	p.analyze = func(_ context.Context, req plugins.Request) (plugins.Outcome, error) {
+		if req.Operation == plugins.OperationDisk && (!strings.Contains(out.String(), "Container runtime-id") || !strings.Contains(out.String(), "[warning] config-ready")) {
+			t.Errorf("disk started before config/runtime were printed: %s", out.String())
+		}
+		d := &plugins.DockerDetails{Context: "local"}
+		if req.Operation == plugins.OperationConfig {
+			return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusComplete, Findings: []plugins.Finding{{Severity: plugins.SeverityWarning, Summary: "config-ready"}}, Details: plugins.Details{Docker: d}}, nil
+		}
+		if req.Operation == plugins.OperationRuntime {
+			d.Runtime = []plugins.DockerContainerStats{{ID: "runtime-id", Name: "worker", CPUPerc: "25%"}}
+			return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusComplete, Details: plugins.Details{Docker: d}}, nil
+		}
+		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusComplete, Details: plugins.Details{Docker: d}}, nil
+	}
+	code := Run(context.Background(), RunConfig{Args: []string{"plugins", "run", "docker"}, Out: &out, ErrOut: io.Discard, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+	text := out.String()
+	if code != 0 || strings.Count(text, "Context:")+strings.Count(text, "context:") != 1 || strings.Count(text, "Container runtime-id") != 1 || !strings.Contains(text, "Docker · complete") {
+		t.Fatalf("stream output code=%d: %s", code, text)
+	}
+}
+
+type failingOutputWriter struct{}
+
+func (failingOutputWriter) Write([]byte) (int, error) { return 0, errors.New("output failed") }
+
+func TestDockerObservedBundlePropagatesWriterFailure(t *testing.T) {
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationConfig, true, plugins.SupportedOptions{}), op(plugins.OperationRuntime, true, plugins.SupportedOptions{}), op(plugins.OperationDisk, true, plugins.SupportedOptions{})}}}
+	code := Run(context.Background(), RunConfig{Args: []string{"plugins", "run", "docker"}, Out: failingOutputWriter{}, ErrOut: io.Discard, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+	if code != int(exitFailure) {
+		t.Fatalf("writer failure exit code = %d", code)
+	}
+}
+
+func TestDockerTypedEvidenceTextAndJSONPreservation(t *testing.T) {
+	falseValue := false
+	bytesAvailable, bytesFree, bytesTotal := uint64(1200), uint64(2000), uint64(4000)
+	inodesFree, inodesTotal := uint64(3), uint64(10)
+	refCount := int64(2)
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusPartial, Outcomes: []plugins.Outcome{{Operation: plugins.OperationConfig, Status: plugins.StatusPartial, Details: plugins.Details{Docker: &plugins.DockerDetails{
+		Crashes:       []plugins.DockerCrashDiagnostic{{ContainerID: "1234567890abcdef", Name: "api", State: plugins.DockerCrashStateRestarting, Classification: plugins.DockerCrashCurrentRestart, RestartCount: 3, ExitCode: int64Pointer(137), OOMKilled: &falseValue, Evidence: "recent restart", RecentDieEvents: 2, RecentStartEvents: 1, HistoryIncomplete: true, EvidenceTruncated: true, RecentLogs: []string{"token=secret\x1b[2J"}, HealthLog: []plugins.DockerHealthLogEntry{{ExitCode: 1, Output: "unhealthy\noutput"}}}},
+		Memory:        []plugins.DockerMemoryDiagnostic{{ID: "1234567890abcdef", Name: "api", CurrentBytes: uint64Pointer(2048), PeakBytes: uint64Pointer(4096), ObservedGrowthBytes: int64Pointer(1024), LimitBytes: uint64Pointer(8192), HeadroomBytes: uint64Pointer(4096), Denominator: plugins.DockerMemoryDenominatorContainerLimit, SampleCount: 4, PressureSampleCount: 2, PressureObservationCount: 3, SustainedPressure: true, RisingUsage: true}},
+		Images:        []plugins.DockerImageDiagnostic{{Repository: "registry/app", Tag: "latest", ID: "1234567890abcdef", Size: "4GB", SharedSize: "2GB", UniqueSize: "2GB", ReferenceState: plugins.DockerImageReferenceReferenced, ReferenceCount: &refCount}},
+		Storage:       &plugins.DockerStorage{SharedLayers: true, SizeTotalsComparable: false, Warnings: []string{"shared data"}, Limits: []string{"display values"}, HostCapacity: &plugins.DockerHostCapacity{Available: true, BytesAvailable: &bytesAvailable, BytesFree: &bytesFree, BytesTotal: &bytesTotal, InodesFree: &inodesFree, InodesTotal: &inodesTotal, LowBytes: true}},
+		ComposeGroups: []plugins.DockerComposeGroup{{Project: "shop", Total: 4, Unhealthy: 1, Restarting: 2}},
+	}}}}}
+	before, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := printPluginReport(&out, r, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"Crash · 1234567890ab", "exit 137", "Event history is incomplete", "Evidence was truncated", "Warning: diagnostic logs may contain secrets", "unhealthy output", "Memory · 1234567890ab", "current 2.0 KiB", "Rising usage is an observation", "Images · repository:tag", "registry/app:latest", "LOW CAPACITY", "3/10 inodes free", "shared layers", "Compose lifecycle · shop"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in output: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "\x1b") || strings.Contains(text, "unhealthy\noutput") {
+		t.Fatalf("unsafe output: %q", text)
+	}
+	var verbose bytes.Buffer
+	if err := printPluginReport(&verbose, r, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(verbose.String(), "Log: token=secret") || !strings.Contains(verbose.String(), "Compose lifecycle · shop") {
+		t.Fatalf("verbose omitted typed evidence: %s", verbose.String())
+	}
+	var unavailable bytes.Buffer
+	if err := printDockerEvidence(&unavailable, &plugins.DockerDetails{Storage: &plugins.DockerStorage{HostCapacity: &plugins.DockerHostCapacity{Available: false, UnavailableReason: plugins.DockerHostReasonRemote}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(unavailable.String(), "Host capacity unavailable: remote-daemon") {
+		t.Fatalf("missing host capacity reason: %s", unavailable.String())
+	}
+	after, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("text rendering mutated report/JSON values")
+	}
+}
+
+func int64Pointer(v int64) *int64    { return &v }
+func uint64Pointer(v uint64) *uint64 { return &v }
 
 func TestDockerSummaryGroupsPrioritizesLimitsAndShowsGapsLast(t *testing.T) {
 	runtime := make([]plugins.DockerContainerStats, 7)

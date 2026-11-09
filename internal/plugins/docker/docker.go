@@ -276,22 +276,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 func (p *Plugin) call(ctx context.Context, command string, args ...string) ([]byte, error) {
 	b, e := runnerFor(ctx, p.runner).Run(ctx, args...)
 	if e != nil {
-		if ctx.Err() != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, &commandTimeoutError{command: command, err: ctx.Err()}
-			}
-			return nil, ctx.Err()
-		}
-		if errors.Is(e, context.DeadlineExceeded) {
-			return nil, &commandTimeoutError{command: command, err: e}
-		}
-		if errors.Is(e, context.Canceled) {
-			return nil, e
-		}
-		if errors.Is(e, ErrCommandFailed) || errors.Is(e, ErrOutputLimit) || errors.Is(e, ErrUnavailable) || errors.Is(e, ErrPermission) || errors.Is(e, ErrConnection) || errors.Is(e, ErrUnsupported) {
-			return nil, e
-		}
-		return nil, ErrCommandFailed
+		return nil, normalizeRunnerError(ctx, command, e)
 	}
 	return b, nil
 }
@@ -307,16 +292,7 @@ func (p *Plugin) callLogs(ctx context.Context, args ...string) ([]byte, error) {
 		b, e = r.Run(ctx, args...)
 	}
 	if e != nil {
-		if ctx.Err() != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, &commandTimeoutError{command: "docker logs", err: ctx.Err()}
-			}
-			return nil, ctx.Err()
-		}
-		if errors.Is(e, context.DeadlineExceeded) {
-			return nil, &commandTimeoutError{command: "docker logs", err: e}
-		}
-		return nil, e
+		return nil, normalizeRunnerError(ctx, "docker logs", e)
 	}
 	return b, nil
 }
