@@ -349,7 +349,7 @@ func (r *Registry) RunWithTimeoutObserved(ctx context.Context, pluginID PluginID
 	for _, op := range selected {
 		opts := req.Options
 		trendOptions := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0
-		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || opts.DiskDetails && !op.Options.DiskDetails || (op.Options.RequirePath && opts.Path == "") {
+		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || opts.DiskDetails && !op.Options.DiskDetails || opts.CrashInvestigation && !op.Options.CrashInvestigation || opts.LogTail != 0 && (!opts.CrashInvestigation || !op.Options.CrashInvestigation) || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)
 		}
 	}

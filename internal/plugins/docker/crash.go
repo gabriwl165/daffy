@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -9,91 +10,140 @@ import (
 	"github.com/gabriwl165/daffy/internal/plugins"
 )
 
-const crashOutputLimit = 64 << 10
+const (
+	crashOutputLimit      = 64 << 10
+	maxEvidenceBytes      = 1 << 20
+	maxEvidenceContainers = 20
+)
 
-func addCrashDiagnostic(ctx context.Context, p *Plugin, d *plugins.DockerDetails, raw inspectContainer, cfg plugins.DockerContainerConfig) {
-	state := raw.State
-	if state == nil {
-		return
+func addCrashDiagnostic(ctx context.Context, p *Plugin, d *plugins.DockerDetails, raw inspectContainer, cfg plugins.DockerContainerConfig) error {
+	s := raw.State
+	if s == nil {
+		return nil
 	}
 	classification := plugins.DockerCrashClassification("")
 	code := plugins.DockerCrashCode("")
 	switch {
-	case state.Status == "restarting":
+	case s.Status == "restarting":
 		classification, code = plugins.DockerCrashCurrentRestart, plugins.DockerCrashCodeRestarting
-	case state.OOMKilled != nil && *state.OOMKilled:
+	case s.OOMKilled != nil && *s.OOMKilled:
 		classification, code = plugins.DockerCrashRecordedOOM, plugins.DockerCrashCodeOOM
-	case state.Status == "running" && state.Health != nil && state.Health.Status == "unhealthy":
+	case s.Status == "running" && s.Health != nil && s.Health.Status == "unhealthy":
 		classification, code = plugins.DockerCrashUnhealthy, plugins.DockerCrashCodeUnhealthy
-	case (state.Status == "exited" || state.Status == "dead") && state.ExitCode != nil && *state.ExitCode != 0:
+	case (s.Status == "exited" || s.Status == "dead") && s.ExitCode != nil && *s.ExitCode != 0:
 		classification, code = plugins.DockerCrashNonzeroExit, plugins.DockerCrashCodeExit
 	case cfg.RestartCount > 0:
 		classification, code = plugins.DockerCrashHistoricalRestart, plugins.DockerCrashCodeRestartHistory
 	default:
-		return
+		return nil
 	}
-	status := plugins.DockerCrashStateStopped
-	if state.Status == "running" {
-		status = plugins.DockerCrashStateRunning
+	state := plugins.DockerCrashStateStopped
+	if s.Status == "running" {
+		state = plugins.DockerCrashStateRunning
 	}
-	if state.Status == "restarting" {
-		status = plugins.DockerCrashStateRestarting
+	if s.Status == "restarting" {
+		state = plugins.DockerCrashStateRestarting
 	}
-	diag := plugins.DockerCrashDiagnostic{ContainerID: cfg.ID, Name: cfg.Name, State: status, Classification: classification, Code: code, RestartCount: cfg.RestartCount, ExitCode: state.ExitCode, OOMKilled: state.OOMKilled}
-	if !state.StartedAt.IsZero() {
-		t := state.StartedAt
+	diag := plugins.DockerCrashDiagnostic{ContainerID: cfg.ID, Name: cfg.Name, State: state, Classification: classification, Code: code, RestartCount: cfg.RestartCount, ExitCode: s.ExitCode, OOMKilled: s.OOMKilled, Project: cfg.Project, Service: cfg.Service, Recommendation: "Review the recorded state and bounded evidence; confirm the cause before changing configuration or restarting."}
+	if !s.StartedAt.IsZero() {
+		t := s.StartedAt
 		diag.StartedAt = &t
 	}
-	if !state.FinishedAt.IsZero() {
-		t := state.FinishedAt
+	if !s.FinishedAt.IsZero() {
+		t := s.FinishedAt
 		diag.FinishedAt = &t
 	}
 	if raw.HostConfig != nil {
 		diag.RestartPolicy = raw.HostConfig.RestartPolicy.Name
 	}
 	opts, _ := ctx.Value(crashOptionsKey{}).(crashOptions)
+	var evidenceErr error
 	if opts.enabled {
-		if state.Health != nil {
-			for _, h := range state.Health.Log {
-				output := boundedText(h.Output, 2048)
+		if len(d.Crashes) >= maxEvidenceContainers {
+			diag.EvidenceTruncated = true
+			diag.EvidenceIssues = append(diag.EvidenceIssues, "evidence container budget reached")
+		} else {
+			var healthLogs []inspectHealthLog
+			if s.Health != nil {
+				healthLogs = s.Health.Log
+			}
+			for i, h := range healthLogs {
+				if i >= 5 {
+					diag.EvidenceTruncated = true
+					break
+				}
+				output := h.Output
+				if len(output) > 2048 {
+					output = output[:2048]
+					diag.EvidenceTruncated = true
+				}
 				diag.HealthLog = append(diag.HealthLog, plugins.DockerHealthLogEntry{Start: timePtr(h.Start), End: timePtr(h.End), ExitCode: h.ExitCode, Output: output})
 			}
-		}
-		tail := opts.tail
-		if tail == 0 {
-			tail = 50
-		}
-		if tail > 200 {
-			tail = 200
-		}
-		logs, err := p.call(ctx, "docker logs", "logs", "--timestamps", "--tail", stringInt(tail), "--since", time.Now().Add(-24*time.Hour).UTC().Format(time.RFC3339), "--until", time.Now().UTC().Format(time.RFC3339), cfg.ID)
-		if err == nil {
-			for _, line := range strings.Split(boundedText(string(logs), crashOutputLimit), "\n") {
-				if line != "" {
-					diag.RecentLogs = append(diag.RecentLogs, line)
+			tail := opts.tail
+			if tail == 0 {
+				tail = 50
+			}
+			if tail > 200 {
+				tail = 200
+			}
+			now := time.Now().UTC()
+			since := now.Add(-24 * time.Hour)
+			logs, err := p.callLogs(ctx, "logs", "--timestamps", "--tail", strconv.Itoa(tail), "--since", since.Format(time.RFC3339), "--until", now.Format(time.RFC3339), cfg.ID)
+			if err != nil {
+				evidenceErr = errors.Join(evidenceErr, err)
+				diag.EvidenceIssues = append(diag.EvidenceIssues, "recent logs unavailable")
+			} else {
+				if len(logs) > crashOutputLimit {
+					logs = logs[:crashOutputLimit]
+					diag.EvidenceTruncated = true
+				}
+				budget := maxEvidenceBytes
+				for _, c := range d.Crashes {
+					for _, l := range c.RecentLogs {
+						budget -= len(l)
+					}
+				}
+				if budget < 0 {
+					budget = 0
+				}
+				if len(logs) > budget {
+					logs = logs[:budget]
+					diag.EvidenceTruncated = true
+				}
+				for _, line := range strings.Split(string(logs), "\n") {
+					if line != "" {
+						diag.RecentLogs = append(diag.RecentLogs, line)
+					}
 				}
 			}
-		} else {
-			diag.Evidence = "recent logs unavailable"
-		}
-		// Docker event stream is time-bounded; count only failure/restart lifecycle events.
-		events, err := p.call(ctx, "docker events", "events", "--since", "24h", "--until", "0s", "--filter", "container="+cfg.ID, "--filter", "event=die", "--filter", "event=start", "--filter", "event=restart", "--format", "{{.Action}}")
-		if err == nil {
-			for _, line := range strings.Fields(string(events)) {
-				if line == "die" || line == "start" || line == "restart" {
-					diag.RecentFailureEvents++
+			events, err := p.call(ctx, "docker events", "events", "--since", since.Format(time.RFC3339), "--until", now.Format(time.RFC3339), "--filter", "container="+cfg.ID, "--format", "{{.Action}}")
+			if err != nil {
+				evidenceErr = errors.Join(evidenceErr, err)
+				diag.EvidenceIssues = append(diag.EvidenceIssues, "recent lifecycle history unavailable")
+			} else {
+				diag.HistoryIncomplete = true
+				for _, line := range strings.Fields(string(events)) {
+					switch line {
+					case plugins.DockerEventDie:
+						diag.RecentDieEvents++
+					case plugins.DockerEventStart:
+						diag.RecentStartEvents++
+					case plugins.DockerEventRestart:
+						diag.RecentRestartEvents++
+					}
 				}
 			}
+		}
+		if ctx.Err() != nil {
+			d.Crashes = append(d.Crashes, diag)
+			return ctx.Err()
+		}
+		if len(diag.EvidenceIssues) > 0 {
+			diag.Evidence = "opt-in evidence collection incomplete"
 		}
 	}
 	d.Crashes = append(d.Crashes, diag)
-}
-
-func boundedText(s string, max int) string {
-	if len(s) > max {
-		return s[:max]
-	}
-	return s
+	return evidenceErr
 }
 func timePtr(t time.Time) *time.Time {
 	if t.IsZero() {
@@ -101,4 +151,3 @@ func timePtr(t time.Time) *time.Time {
 	}
 	return &t
 }
-func stringInt(n int) string { return strconv.Itoa(n) }

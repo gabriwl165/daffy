@@ -20,6 +20,9 @@ const (
 	DockerCrashCodeUnhealthy      DockerCrashCode           = "container_unhealthy"
 	DockerCrashCodeExit           DockerCrashCode           = "nonzero_exit"
 	DockerCrashCodeRestartHistory DockerCrashCode           = "restart_history"
+	DockerEventDie                                          = "die"
+	DockerEventStart                                        = "start"
+	DockerEventRestart                                      = "restart"
 )
 
 type DockerCrashDiagnostic struct {
@@ -38,6 +41,15 @@ type DockerCrashDiagnostic struct {
 	HealthLog           []DockerHealthLogEntry    `json:"health_log,omitempty"`
 	RecentLogs          []string                  `json:"recent_logs,omitempty"`
 	RecentFailureEvents int                       `json:"recent_failure_events,omitempty"`
+	RecentDieEvents     int                       `json:"recent_die_events,omitempty"`
+	RecentStartEvents   int                       `json:"recent_start_events,omitempty"`
+	RecentRestartEvents int                       `json:"recent_restart_events,omitempty"`
+	HistoryIncomplete   bool                      `json:"history_incomplete,omitempty"`
+	EvidenceTruncated   bool                      `json:"evidence_truncated,omitempty"`
+	Project             string                    `json:"project,omitempty"`
+	Service             string                    `json:"service,omitempty"`
+	Recommendation      string                    `json:"recommendation,omitempty"`
+	EvidenceIssues      []string                  `json:"evidence_issues,omitempty"`
 }
 type DockerHealthLogEntry struct {
 	Start    *time.Time `json:"start,omitempty"`

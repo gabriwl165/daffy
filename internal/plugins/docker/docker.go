@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +102,12 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return b.buffer.Write(p)
 }
 func (r *CommandRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, false, args...)
+}
+func (r *CommandRunner) RunWithStderr(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, true, args...)
+}
+func (r *CommandRunner) run(ctx context.Context, mergeStderr bool, args ...string) ([]byte, error) {
 	if r == nil {
 		return nil, ErrUnavailable
 	}
@@ -140,6 +147,9 @@ func (r *CommandRunner) Run(ctx context.Context, args ...string) ([]byte, error)
 			return nil, category
 		}
 		return nil, ErrCommandFailed
+	}
+	if mergeStderr {
+		_, _ = out.Write(errOut.buffer.Bytes())
 	}
 	return out.buffer.Bytes(), nil
 }
@@ -197,7 +207,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusCancelled}, err
 	}
 	trendOptions := req.Options.Samples != 0 || req.Options.Interval != 0 || req.Options.RuntimeTop != 0 || req.Options.CPUThreshold != 0 || req.Options.MemoryThreshold != 0
-	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions || req.Options.DiskDetails && req.Operation != plugins.OperationDisk || req.Options.LogTail < 0 || req.Options.LogTail > 200 || (req.Options.CrashInvestigation || req.Options.LogTail != 0) && req.Operation != plugins.OperationConfig {
+	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions || req.Options.DiskDetails && req.Operation != plugins.OperationDisk || req.Options.LogTail < 0 || req.Options.LogTail > 200 || req.Options.LogTail != 0 && !req.Options.CrashInvestigation || (req.Options.CrashInvestigation || req.Options.LogTail != 0) && req.Operation != plugins.OperationConfig {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	if validateTargetOptions(req.Options) != nil {
@@ -270,6 +280,15 @@ func (p *Plugin) call(ctx context.Context, command string, args ...string) ([]by
 		return nil, ErrCommandFailed
 	}
 	return b, nil
+}
+func (p *Plugin) callLogs(ctx context.Context, args ...string) ([]byte, error) {
+	r := runnerFor(ctx, p.runner)
+	if capable, ok := r.(interface {
+		RunWithStderr(context.Context, ...string) ([]byte, error)
+	}); ok {
+		return capable.RunWithStderr(ctx, args...)
+	}
+	return r.Run(ctx, args...)
 }
 func fail(o *plugins.Outcome, code string) {
 	o.Issues = append(o.Issues, plugins.Issue{Code: code, Summary: "Docker data could not be read or validated"})
@@ -516,7 +535,13 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				fail(o, issueHostConfigUnknown)
 			}
 			d.Config = append(d.Config, cfg)
-			addCrashDiagnostic(ctx, p, d, c, cfg)
+			if crashErr := addCrashDiagnostic(ctx, p, d, c, cfg); crashErr != nil {
+				fail(o, "docker_crash_evidence_incomplete")
+				aggregate = errors.Join(aggregate, crashErr)
+				if ctx.Err() != nil {
+					return errors.Join(aggregate, ctx.Err())
+				}
+			}
 			if cfg.Project != "" {
 				group := composeGroup(d, cfg.Project)
 				group.Total++
@@ -555,6 +580,12 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 		}
 		return aggregate
 	}
+	sort.Slice(d.Crashes, func(i, j int) bool {
+		if d.Crashes[i].Classification != d.Crashes[j].Classification {
+			return d.Crashes[i].Classification < d.Crashes[j].Classification
+		}
+		return d.Crashes[i].ContainerID < d.Crashes[j].ContainerID
+	})
 	return nil
 }
 
