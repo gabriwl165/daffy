@@ -238,9 +238,13 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	ctx = context.WithValue(ctx, selectorKey{}, append([]string(nil), req.Options.Containers...))
 	ctx = context.WithValue(ctx, projectKey{}, req.Options.Project)
 	ctx = context.WithValue(ctx, crashOptionsKey{}, crashOptions{enabled: req.Options.CrashInvestigation, tail: req.Options.LogTail})
+	ctx = context.WithValue(ctx, contextKey{}, req.Options.Context)
 	var err error
 	switch req.Operation {
 	case plugins.OperationDisk:
+		if req.Options.HostCapacity {
+			initHostCapacity(ctx, p, d)
+		}
 		err = p.disk(ctx, d, &o)
 		if err == nil && (req.Options.DiskDetails || req.Options.ImageFilter != "" || req.Options.DiskSort != "" || req.Options.HostCapacity) {
 			err = p.diskDetails(ctx, d, &o)

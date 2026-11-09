@@ -17,18 +17,6 @@ type PluginID string
 type OperationID string
 type Status string
 type Access string
-type DockerImageFilter string
-type DockerDiskSort string
-
-const (
-	DockerImageFilterAll        DockerImageFilter = "all"
-	DockerImageFilterUnused     DockerImageFilter = "unused"
-	DockerImageFilterDangling   DockerImageFilter = "dangling"
-	DockerImageFilterReferenced DockerImageFilter = "referenced"
-	DockerDiskSortSize          DockerDiskSort    = "size"
-	DockerDiskSortUniqueSize    DockerDiskSort    = "unique-size"
-	DockerDiskSortName          DockerDiskSort    = "name"
-)
 
 const (
 	PluginDocker         PluginID    = "docker"
@@ -210,34 +198,6 @@ type DockerDetails struct {
 	Images        []DockerImageDiagnostic  `json:"images,omitempty"`
 	Storage       *DockerStorage           `json:"storage,omitempty"`
 }
-type DockerImageDiagnostic struct {
-	Repository      string `json:"repository,omitempty"`
-	Tag             string `json:"tag,omitempty"`
-	ID              string `json:"id"`
-	Size            string `json:"size"`
-	SizeBytes       *int64 `json:"size_bytes,omitempty"`
-	UniqueSize      string `json:"unique_size,omitempty"`
-	UniqueSizeBytes *int64 `json:"unique_size_bytes,omitempty"`
-	ReferenceState  string `json:"reference_state"`
-	ReferenceCount  *int64 `json:"reference_count,omitempty"`
-	TagState        string `json:"tag_state"`
-}
-type DockerHostCapacity struct {
-	Available         bool    `json:"available"`
-	UnavailableReason string  `json:"unavailable_reason,omitempty"`
-	BytesTotal        *uint64 `json:"bytes_total,omitempty"`
-	BytesFree         *uint64 `json:"bytes_free,omitempty"`
-	BytesAvailable    *uint64 `json:"bytes_available,omitempty"`
-	InodesTotal       *uint64 `json:"inodes_total,omitempty"`
-	InodesFree        *uint64 `json:"inodes_free,omitempty"`
-}
-type DockerStorage struct {
-	SharedLayers         bool                `json:"shared_layers"`
-	SizeTotalsComparable bool                `json:"size_totals_comparable"`
-	Warnings             []string            `json:"warnings,omitempty"`
-	Limits               []string            `json:"limits,omitempty"`
-	HostCapacity         *DockerHostCapacity `json:"host_capacity,omitempty"`
-}
 type DockerRuntimeTrend struct {
 	SampleCount int                      `json:"sample_count"`
 	Containers  []DockerRuntimeTrendItem `json:"containers,omitempty"`
@@ -407,6 +367,9 @@ func (r *Registry) RunWithTimeoutObserved(ctx context.Context, pluginID PluginID
 	}
 	for _, op := range selected {
 		opts := req.Options
+		if opts.ImageFilter != "" && opts.ImageFilter != DockerImageFilterAll && opts.ImageFilter != DockerImageFilterUnused && opts.ImageFilter != DockerImageFilterDangling && opts.ImageFilter != DockerImageFilterReferenced || opts.DiskSort != "" && opts.DiskSort != DockerDiskSortSize && opts.DiskSort != DockerDiskSortUniqueSize && opts.DiskSort != DockerDiskSortName {
+			return report, fmt.Errorf("%w: invalid Docker storage option", ErrInvalid)
+		}
 		trendOptions := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0
 		if opts.MemoryDetails && !op.Options.MemoryDetails || opts.RuntimeSort != "" && !op.Options.RuntimeSort || opts.RuntimeSort != "" && opts.RuntimeSort != DockerRuntimeSortCPU && opts.RuntimeSort != DockerRuntimeSortMemory || opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || opts.DiskDetails && !op.Options.DiskDetails || opts.CrashInvestigation && !op.Options.CrashInvestigation || opts.LogTail != 0 && (!opts.CrashInvestigation || !op.Options.CrashInvestigation) || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)
