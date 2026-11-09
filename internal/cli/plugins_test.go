@@ -326,7 +326,7 @@ func TestDockerConciseAndVerboseText(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := concise.String()
-	if strings.Count(text, "Context:") != 1 || !strings.Contains(text, "1234567890ab") || strings.Contains(text, "1234567890abcdef") || !strings.Contains(text, "Storage · images") || strings.Index(text, "memory limit missing") > strings.Index(text, "Storage · images") {
+	if strings.Count(text, "Context:") != 1 || strings.Contains(text, "1234567890abcdef") || strings.Contains(text, "Container 1234567890ab") || !strings.Contains(text, "Storage · images") || strings.Index(text, "memory limit missing") > strings.Index(text, "Storage · images") {
 		t.Fatalf("concise output: %q", text)
 	}
 	var full bytes.Buffer
@@ -335,6 +335,29 @@ func TestDockerConciseAndVerboseText(t *testing.T) {
 	}
 	if !strings.Contains(full.String(), "full-detail") || !strings.Contains(full.String(), "Context: dev") {
 		t.Fatalf("verbose output omitted legacy detail: %q", full.String())
+	}
+}
+
+func TestDockerSummaryRanksRuntimeWithoutMutatingReport(t *testing.T) {
+	rows := []plugins.DockerContainerStats{{ID: "low", Name: "low", CPUPerc: "2%", MemUsage: "9GiB / 12GiB"}, {ID: "high", Name: "high", CPUPerc: "80%", MemUsage: "1GiB / 2GiB"}, {ID: "memory", Name: "memory", CPUPerc: "2%", MemUsage: "10GiB / 12GiB"}}
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationRuntime, Status: plugins.StatusComplete, Details: plugins.Details{Docker: &plugins.DockerDetails{Runtime: rows}}}}}
+	var out bytes.Buffer
+	if err := printPluginReport(&out, r, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Index(text, "Container high") > strings.Index(text, "Container memory") || strings.Index(text, "Container memory") > strings.Index(text, "Container low") {
+		t.Fatalf("runtime ranking: %s", text)
+	}
+	if r.Outcomes[0].Details.Docker.Runtime[0].Name != "low" {
+		t.Fatal("summary rendering mutated report order")
+	}
+}
+
+func TestDockerOperationDescriptorDefaultOrder(t *testing.T) {
+	d, ok := DefaultDeps().Plugins.Lookup(plugins.PluginDocker)
+	if !ok || len(d.Operations) < 3 || d.Operations[0].ID != plugins.OperationConfig || d.Operations[1].ID != plugins.OperationRuntime || d.Operations[2].ID != plugins.OperationDisk {
+		t.Fatalf("Docker operation order: %+v", d.Operations)
 	}
 }
 
@@ -363,7 +386,7 @@ func TestDockerSummaryGroupsPrioritizesLimitsAndShowsGapsLast(t *testing.T) {
 	if strings.Index(text, "[warning]") > strings.Index(text, "[info]") || strings.Index(text, "[info]") > strings.Index(text, "Container container-00 · worker-0") || strings.Index(text, "Container container-00 · worker-0") > strings.Index(text, "Storage · images") {
 		t.Fatalf("sections out of priority order: %s", text)
 	}
-	if strings.Count(text, "Container container-") != 6 || !strings.Contains(text, "2 more containers hidden; use --verbose") {
+	if strings.Count(text, "Container container-") != 5 || !strings.Contains(text, "2 more containers hidden; use --verbose") {
 		t.Fatalf("runtime limit missing: %s", text)
 	}
 	if !strings.Contains(text, "container-00000001-copy") || !strings.Contains(text, "container-00 failed") {
