@@ -53,6 +53,7 @@ type Options struct {
 	Context         string        `json:"context,omitempty"`
 	Containers      []string      `json:"containers,omitempty"`
 	Project         string        `json:"project,omitempty"`
+	DiskDetails     bool          `json:"disk_details,omitempty"`
 	Samples         int           `json:"samples,omitempty"`
 	Interval        time.Duration `json:"interval,omitempty"`
 	RuntimeTop      int           `json:"runtime_top,omitempty"`
@@ -72,6 +73,7 @@ type SupportedOptions struct {
 	Containers    bool `json:"containers,omitempty"`
 	Project       bool `json:"project,omitempty"`
 	RuntimeTrends bool `json:"runtime_trends,omitempty"`
+	DiskDetails   bool `json:"disk_details,omitempty"`
 }
 type Operation struct {
 	ID      OperationID      `json:"id"`
@@ -108,6 +110,29 @@ type DockerDiskUsage struct {
 	Active      int64  `json:"active"`
 	Size        string `json:"size"`
 	Reclaimable string `json:"reclaimable"`
+}
+type DockerDiskBreakdown struct {
+	Category string           `json:"category"`
+	Items    []DockerDiskItem `json:"items"`
+}
+type DockerDiskItem struct {
+	ID           string `json:"id,omitempty"`
+	Repository   string `json:"repository,omitempty"`
+	Tag          string `json:"tag,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Names        string `json:"names,omitempty"`
+	Image        string `json:"image,omitempty"`
+	CacheType    string `json:"cache_type,omitempty"`
+	Size         string `json:"size"`
+	SharedSize   string `json:"shared_size,omitempty"`
+	UniqueSize   string `json:"unique_size,omitempty"`
+	Containers   string `json:"containers,omitempty"`
+	LocalVolumes string `json:"local_volumes,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Links        string `json:"links,omitempty"`
+	UsageCount   string `json:"usage_count,omitempty"`
+	InUse        string `json:"in_use,omitempty"`
+	Shared       string `json:"shared,omitempty"`
 }
 type DockerContainerStats struct {
 	ID       string `json:"id"`
@@ -148,6 +173,7 @@ type DockerDetails struct {
 	Config        []DockerContainerConfig `json:"config,omitempty"`
 	Context       string                  `json:"context,omitempty"`
 	ComposeGroups []DockerComposeGroup    `json:"compose_groups,omitempty"`
+	DiskBreakdown []DockerDiskBreakdown   `json:"disk_breakdown,omitempty"`
 	RuntimeTrend  *DockerRuntimeTrend     `json:"runtime_trend,omitempty"`
 }
 type DockerRuntimeTrend struct {
@@ -312,7 +338,7 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 	for _, op := range selected {
 		opts := req.Options
 		trendOptions := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0
-		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || (op.Options.RequirePath && opts.Path == "") {
+		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || opts.DiskDetails && !op.Options.DiskDetails || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)
 		}
 	}

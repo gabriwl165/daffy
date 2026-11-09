@@ -145,6 +145,35 @@ func TestRuntimeTrendTextRendering(t *testing.T) {
 	}
 }
 
+func TestDockerDiskDetailsFlag(t *testing.T) {
+	var got plugins.Request
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{Context: true, DiskDetails: true}), op(plugins.OperationRuntime, false, plugins.SupportedOptions{RuntimeTrends: true}), op(plugins.OperationConfig, false, plugins.SupportedOptions{})}}, analyze: func(_ context.Context, r plugins.Request) (plugins.Outcome, error) {
+		got = r
+		return plugins.Outcome{Status: plugins.StatusComplete}, nil
+	}}
+	code, _, err := runFake(t, p, "disk", "--details", "--context", "dev")
+	if code != 0 || err != "" || !got.Options.DiskDetails || got.Options.Context != "dev" {
+		t.Fatalf("details code=%d err=%q req=%#v", code, err, got)
+	}
+	for _, args := range [][]string{{"runtime", "--details"}, {"config", "--details"}} {
+		code, _, _ = runFake(t, p, args...)
+		if code == 0 {
+			t.Errorf("accepted --details on %v", args)
+		}
+	}
+	for _, args := range [][]string{{"disk", "--details", "--container", "api"}, {"disk", "--details", "--project", "shop"}} {
+		code, _, _ = runFake(t, p, args...)
+		if code == 0 {
+			t.Errorf("accepted disk targeting with details: %v", args)
+		}
+	}
+	wrong := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginBazel, Operations: []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}}}
+	code, _, _ = runFake(t, wrong, "--details")
+	if code == 0 {
+		t.Fatal("accepted Docker flag on Bazel")
+	}
+}
+
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("writer failed") }
