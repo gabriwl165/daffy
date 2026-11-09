@@ -47,21 +47,30 @@ var (
 )
 
 type Options struct {
-	Path               string        `json:"path,omitempty"`
-	Excludes           []string      `json:"excludes,omitempty"`
-	TopN               int           `json:"top_n,omitempty"`
-	Context            string        `json:"context,omitempty"`
-	Containers         []string      `json:"containers,omitempty"`
-	Project            string        `json:"project,omitempty"`
-	DiskDetails        bool          `json:"disk_details,omitempty"`
-	Samples            int           `json:"samples,omitempty"`
-	Interval           time.Duration `json:"interval,omitempty"`
-	RuntimeTop         int           `json:"runtime_top,omitempty"`
-	CPUThreshold       float64       `json:"cpu_threshold,omitempty"`
-	MemoryThreshold    float64       `json:"memory_threshold,omitempty"`
-	CrashInvestigation bool          `json:"crash_investigation,omitempty"`
-	LogTail            int           `json:"log_tail,omitempty"`
+	Path               string            `json:"path,omitempty"`
+	Excludes           []string          `json:"excludes,omitempty"`
+	TopN               int               `json:"top_n,omitempty"`
+	Context            string            `json:"context,omitempty"`
+	Containers         []string          `json:"containers,omitempty"`
+	Project            string            `json:"project,omitempty"`
+	DiskDetails        bool              `json:"disk_details,omitempty"`
+	Samples            int               `json:"samples,omitempty"`
+	Interval           time.Duration     `json:"interval,omitempty"`
+	RuntimeTop         int               `json:"runtime_top,omitempty"`
+	CPUThreshold       float64           `json:"cpu_threshold,omitempty"`
+	MemoryThreshold    float64           `json:"memory_threshold,omitempty"`
+	CrashInvestigation bool              `json:"crash_investigation,omitempty"`
+	LogTail            int               `json:"log_tail,omitempty"`
+	MemoryDetails      bool              `json:"memory_details,omitempty"`
+	RuntimeSort        DockerRuntimeSort `json:"runtime_sort,omitempty"`
 }
+type DockerRuntimeSort string
+
+const (
+	DockerRuntimeSortCPU    DockerRuntimeSort = "cpu"
+	DockerRuntimeSortMemory DockerRuntimeSort = "memory"
+)
+
 type Request struct {
 	Operation OperationID `json:"operation,omitempty"`
 	Options   Options     `json:"options,omitempty"`
@@ -77,6 +86,8 @@ type SupportedOptions struct {
 	RuntimeTrends      bool `json:"runtime_trends,omitempty"`
 	DiskDetails        bool `json:"disk_details,omitempty"`
 	CrashInvestigation bool `json:"crash_investigation,omitempty"`
+	MemoryDetails      bool `json:"memory_details,omitempty"`
+	RuntimeSort        bool `json:"runtime_sort,omitempty"`
 }
 type Operation struct {
 	ID      OperationID      `json:"id"`
@@ -171,14 +182,15 @@ type DockerComposeGroup struct {
 	Restarting int    `json:"restarting"`
 }
 type DockerDetails struct {
-	DiskUsage     []DockerDiskUsage       `json:"disk_usage,omitempty"`
-	Runtime       []DockerContainerStats  `json:"runtime,omitempty"`
-	Config        []DockerContainerConfig `json:"config,omitempty"`
-	Context       string                  `json:"context,omitempty"`
-	ComposeGroups []DockerComposeGroup    `json:"compose_groups,omitempty"`
-	DiskBreakdown []DockerDiskBreakdown   `json:"disk_breakdown,omitempty"`
-	RuntimeTrend  *DockerRuntimeTrend     `json:"runtime_trend,omitempty"`
-	Crashes       []DockerCrashDiagnostic `json:"crashes,omitempty"`
+	DiskUsage     []DockerDiskUsage        `json:"disk_usage,omitempty"`
+	Runtime       []DockerContainerStats   `json:"runtime,omitempty"`
+	Config        []DockerContainerConfig  `json:"config,omitempty"`
+	Context       string                   `json:"context,omitempty"`
+	ComposeGroups []DockerComposeGroup     `json:"compose_groups,omitempty"`
+	DiskBreakdown []DockerDiskBreakdown    `json:"disk_breakdown,omitempty"`
+	RuntimeTrend  *DockerRuntimeTrend      `json:"runtime_trend,omitempty"`
+	Crashes       []DockerCrashDiagnostic  `json:"crashes,omitempty"`
+	Memory        []DockerMemoryDiagnostic `json:"memory,omitempty"`
 }
 type DockerRuntimeTrend struct {
 	SampleCount int                      `json:"sample_count"`
@@ -349,7 +361,7 @@ func (r *Registry) RunWithTimeoutObserved(ctx context.Context, pluginID PluginID
 	for _, op := range selected {
 		opts := req.Options
 		trendOptions := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0
-		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || opts.DiskDetails && !op.Options.DiskDetails || opts.CrashInvestigation && !op.Options.CrashInvestigation || opts.LogTail != 0 && (!opts.CrashInvestigation || !op.Options.CrashInvestigation) || (op.Options.RequirePath && opts.Path == "") {
+		if opts.MemoryDetails && !op.Options.MemoryDetails || opts.RuntimeSort != "" && !op.Options.RuntimeSort || opts.RuntimeSort != "" && opts.RuntimeSort != DockerRuntimeSortCPU && opts.RuntimeSort != DockerRuntimeSortMemory || opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || opts.DiskDetails && !op.Options.DiskDetails || opts.CrashInvestigation && !op.Options.CrashInvestigation || opts.LogTail != 0 && (!opts.CrashInvestigation || !op.Options.CrashInvestigation) || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)
 		}
 	}
