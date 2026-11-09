@@ -45,19 +45,35 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 			case <-t.C:
 			}
 		}
-		if err := p.runtime(ctx, d, o); err != nil {
+		candidate := &plugins.DockerDetails{Context: d.Context}
+		candidateOutcome := &plugins.Outcome{Status: plugins.StatusComplete}
+		if err := p.runtime(ctx, candidate, candidateOutcome); err != nil {
+			o.Issues = append(o.Issues, candidateOutcome.Issues...)
+			o.Findings = append(o.Findings, candidateOutcome.Findings...)
+			if candidateOutcome.Status != "" && candidateOutcome.Status != plugins.StatusComplete {
+				o.Status = candidateOutcome.Status
+			}
 			return err
 		}
+		needsValidation := requested || opts.MemoryDetails
+		if needsValidation {
+			if err := validateRuntimePercentages(candidate.Runtime); err != nil {
+				fail(o, issueRuntimeInvalid)
+				return err
+			}
+		}
+		// Only a complete, validated stats response becomes observable.
+		d.Runtime = candidate.Runtime
 		if opts.MemoryDetails {
 			threshold := opts.MemoryThreshold
 			if threshold == 0 {
 				threshold = sustainedMemoryPressureThreshold
 			}
-			recordMemory(&memory, d.Runtime, threshold)
+			recordMemory(&memory, candidate.Runtime, threshold)
 		}
 		if !requested {
 			if opts.MemoryDetails {
-				if err := p.memoryInspect(ctx, d.Runtime, memory); err != nil {
+				if err := p.memoryInspect(ctx, candidate.Runtime, memory); err != nil {
 					fail(o, issueInspectUnavailable)
 					return err
 				}
@@ -69,8 +85,8 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 			cpu float64
 			mem float64
 		}
-		observations := make([]observation, 0, len(d.Runtime))
-		for _, row := range d.Runtime {
+		observations := make([]observation, 0, len(candidate.Runtime))
+		for _, row := range candidate.Runtime {
 			cpu, e1 := percent(row.CPUPerc)
 			mem, e2 := percent(row.MemPerc)
 			if e1 != nil || e2 != nil || invalidPercent(cpu) || invalidPercent(mem) || cpu < 0 || mem < 0 || mem > 100 {
@@ -100,7 +116,7 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 		}
 		completed++
 		if opts.MemoryDetails {
-			if err := p.memoryInspect(ctx, d.Runtime, memory); err != nil {
+			if err := p.memoryInspect(ctx, candidate.Runtime, memory); err != nil {
 				fail(o, issueInspectUnavailable)
 				return err
 			}
@@ -122,6 +138,17 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 			}
 			return a > b
 		})
+	}
+	return nil
+}
+
+func validateRuntimePercentages(rows []plugins.DockerContainerStats) error {
+	for _, row := range rows {
+		cpu, e1 := percent(row.CPUPerc)
+		mem, e2 := percent(row.MemPerc)
+		if e1 != nil || e2 != nil || invalidPercent(cpu) || invalidPercent(mem) || cpu < 0 || mem < 0 || mem > 100 {
+			return ErrInvalidResponse
+		}
 	}
 	return nil
 }
