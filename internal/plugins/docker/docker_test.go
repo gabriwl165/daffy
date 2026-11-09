@@ -112,6 +112,57 @@ func TestConfigEmptyAndPartialInspect(t *testing.T) {
 		t.Fatal("missing host config evidence must be partial")
 	}
 }
+
+func TestConfigFailureDiagnostics(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name, status, fields              string
+		restarts                          int
+		failure, severity, recommendation string
+	}{
+		{"oom", "exited", `,"OOMKilled":true,"ExitCode":137`, 0, "out-of-memory", string(plugins.SeverityWarning), "Review memory"},
+		{"exit", "exited", `,"OOMKilled":false,"ExitCode":2`, 0, "exit code 2", string(plugins.SeverityWarning), "Review the container logs"},
+		{"dead", "dead", `,"ExitCode":9`, 0, "exit code 9", string(plugins.SeverityWarning), "Review the container logs"},
+		{"running", "running", `,"ExitCode":3`, 0, "", "", ""},
+		{"absent", "running", "", 0, "", "", ""},
+		{"history", "running", `,"OOMKilled":false,"ExitCode":0`, 2, "historically", string(plugins.SeverityInfo), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := fmt.Sprintf(`[{"Id":%q,"Name":%q,"RestartCount":%d,"State":{"Status":%q%s},"HostConfig":{"Memory":1,"Privileged":false}}]`, id, "/"+tc.name, tc.restarts, tc.status, tc.fields)
+			o, err := New(&fakeRunner{outputs: [][]byte{[]byte(id + "\n"), []byte(payload)}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := o.Details.Docker.Config[0]
+			if tc.fields == "" && (cfg.OOMKilled != nil || cfg.ExitCode != nil) {
+				t.Fatalf("absent fields: %+v", cfg)
+			}
+			var f *plugins.Finding
+			for i := range o.Findings {
+				if o.Findings[i].Code == findingContainerFailure {
+					f = &o.Findings[i]
+				}
+			}
+			if tc.failure == "" {
+				if f != nil {
+					t.Fatalf("unexpected failure finding: %+v", f)
+				}
+				return
+			}
+			if f == nil || !strings.Contains(f.Summary, tc.failure) || string(f.Severity) != tc.severity {
+				t.Fatalf("missing expected finding: %+v", o.Findings)
+			}
+			if tc.recommendation != "" && (f.Recommendation == "" || !strings.Contains(f.Recommendation, tc.recommendation)) {
+				t.Fatalf("recommendation missing: %+v", f)
+			}
+			if tc.restarts > 0 && (!strings.Contains(f.Summary, "historically")) {
+				t.Fatalf("historical wording: %+v", f)
+			}
+		})
+	}
+}
+
 func TestAnalyzeValidationAndCommandRunner(t *testing.T) {
 	r := &fakeRunner{}
 	p := New(r)

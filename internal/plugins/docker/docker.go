@@ -39,6 +39,7 @@ const (
 	findingPrivileged       = "docker_privileged"
 	findingUnlimitedMemory  = "docker_memory_unlimited"
 	findingUnhealthy        = "docker_container_unhealthy"
+	findingContainerFailure = "docker_container_failure"
 	stateUnhealthy          = "unhealthy"
 	stateRestarting         = "restarting"
 )
@@ -364,7 +365,7 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				fail(o, issueInspectIncomplete)
 				continue
 			}
-			cfg := plugins.DockerContainerConfig{ID: id, Name: strings.TrimPrefix(c.Name, "/"), Status: c.State.Status, RestartCount: c.RestartCount, Health: ""}
+			cfg := plugins.DockerContainerConfig{ID: id, Name: strings.TrimPrefix(c.Name, "/"), Status: c.State.Status, RestartCount: c.RestartCount, Health: "", OOMKilled: c.State.OOMKilled, ExitCode: c.State.ExitCode}
 			if c.State.Health != nil {
 				cfg.Health = c.State.Health.Status
 			}
@@ -389,7 +390,14 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnlimitedMemory, Severity: plugins.SeverityInfo, Summary: fmt.Sprintf("Container %s (%s) has no memory limit", cfg.Name, id)})
 			}
 			if cfg.Health == stateUnhealthy || cfg.Status == stateRestarting {
-				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnhealthy, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) is unhealthy or restarting", cfg.Name, id)})
+				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnhealthy, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) is unhealthy or restarting", cfg.Name, id), Recommendation: "Inspect the health check and recent logs; verify the service before restarting."})
+			}
+			if cfg.OOMKilled != nil && *cfg.OOMKilled {
+				o.Findings = append(o.Findings, plugins.Finding{Code: findingContainerFailure, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) was killed after an out-of-memory event", cfg.Name, id), Recommendation: "Review memory usage and limits, then verify the workload before restarting."})
+			} else if (cfg.Status == "exited" || cfg.Status == "dead") && cfg.ExitCode != nil && *cfg.ExitCode != 0 {
+				o.Findings = append(o.Findings, plugins.Finding{Code: findingContainerFailure, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) stopped with exit code %d", cfg.Name, id, *cfg.ExitCode), Recommendation: "Review the container logs and exit code before changing configuration or restarting."})
+			} else if cfg.RestartCount > 0 {
+				o.Findings = append(o.Findings, plugins.Finding{Code: findingContainerFailure, Severity: plugins.SeverityInfo, Summary: fmt.Sprintf("Container %s (%s) has restarted %d time(s) historically; this does not indicate a current failure", cfg.Name, id, cfg.RestartCount)})
 			}
 		}
 		if len(seen) != len(ids[i:end]) {
@@ -423,8 +431,10 @@ type inspectContainer struct {
 	HostConfig   *inspectHostConfig `json:"HostConfig"`
 }
 type inspectState struct {
-	Status string         `json:"Status"`
-	Health *inspectHealth `json:"Health"`
+	Status    string         `json:"Status"`
+	Health    *inspectHealth `json:"Health"`
+	OOMKilled *bool          `json:"OOMKilled"`
+	ExitCode  *int64         `json:"ExitCode"`
 }
 type inspectHealth struct {
 	Status string `json:"Status"`
