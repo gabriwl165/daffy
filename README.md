@@ -1,5 +1,8 @@
 # Daffy
 
+![Daffy](assets/daffy-mage.gif)
+
+
 A system health CLI with read-only diagnostics, written in Go. Investigate overheating, freezes,
 resource contention, and slow boots without applying speculative “optimizations.”
 Explicit `kill` commands additionally provide process control on Linux and macOS.
