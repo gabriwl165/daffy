@@ -49,13 +49,19 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 			return err
 		}
 		if opts.MemoryDetails {
-			recordMemory(&memory, d.Runtime)
-			if err := p.memoryInspect(ctx, memory); err != nil {
-				fail(o, issueInspectUnavailable)
-				return err
+			threshold := opts.MemoryThreshold
+			if threshold == 0 {
+				threshold = sustainedMemoryPressureThreshold
 			}
+			recordMemory(&memory, d.Runtime, threshold)
 		}
 		if !requested {
+			if opts.MemoryDetails {
+				if err := p.memoryInspect(ctx, d.Runtime, memory); err != nil {
+					fail(o, issueInspectUnavailable)
+					return err
+				}
+			}
 			continue
 		}
 		type observation struct {
@@ -93,6 +99,12 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 			}
 		}
 		completed++
+		if opts.MemoryDetails {
+			if err := p.memoryInspect(ctx, d.Runtime, memory); err != nil {
+				fail(o, issueInspectUnavailable)
+				return err
+			}
+		}
 		// A missing container in a sample is churn, not a zero reading.
 	}
 	if requested {
@@ -120,7 +132,7 @@ type memoryAccumulator struct {
 
 const sustainedMemoryPressureThreshold = 80.0
 
-func recordMemory(items *[]memoryAccumulator, rows []plugins.DockerContainerStats) {
+func recordMemory(items *[]memoryAccumulator, rows []plugins.DockerContainerStats, threshold float64) {
 	for _, row := range rows {
 		current, _, ok := parseMemUsage(row.MemUsage)
 		if !ok {
@@ -151,8 +163,12 @@ func recordMemory(items *[]memoryAccumulator, rows []plugins.DockerContainerStat
 		}
 		a.item.SampleCount++
 		pressure, err := percent(row.MemPerc)
-		if err == nil && !invalidPercent(pressure) && pressure >= sustainedMemoryPressureThreshold {
+		if err == nil && !invalidPercent(pressure) && pressure >= threshold {
 			a.item.PressureSampleCount++
+		}
+		if err == nil && !invalidPercent(pressure) {
+			a.item.PressureObservationCount++
+			a.item.PressureThresholdPercent = threshold
 		}
 	}
 }
@@ -163,13 +179,12 @@ func finishMemory(items []memoryAccumulator) []plugins.DockerMemoryDiagnostic {
 		item := a.item
 		if item.FirstBytes != nil && item.CurrentBytes != nil {
 			delta, ok := signedDelta(*item.CurrentBytes, *item.FirstBytes)
-			if !ok {
-				continue
+			if ok {
+				item.ObservedGrowthBytes = &delta
+				item.RisingUsage = delta > 0
 			}
-			item.ObservedGrowthBytes = &delta
-			item.RisingUsage = delta > 0
 		}
-		item.SustainedPressure = item.SampleCount > 1 && item.PressureSampleCount >= 2 && item.PressureSampleCount*2 >= item.SampleCount
+		item.SustainedPressure = item.PressureObservationCount > 1 && item.PressureSampleCount >= 2 && item.PressureSampleCount*2 >= item.PressureObservationCount
 		out = append(out, item)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -195,65 +210,80 @@ func signedDelta(a, b uint64) (int64, bool) {
 	return -int64(d), true
 }
 
-func (p *Plugin) memoryInspect(ctx context.Context, samples []memoryAccumulator) error {
-	ids := make([]string, 0, len(samples))
-	for _, a := range samples {
-		if a.item.SampleCount > 0 {
-			ids = append(ids, a.item.ID)
-		}
+func (p *Plugin) memoryInspect(ctx context.Context, current []plugins.DockerContainerStats, samples []memoryAccumulator) error {
+	ids := make([]string, 0, len(current))
+	for _, row := range current {
+		ids = append(ids, row.ID)
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	b, err := p.call(ctx, "docker inspect", append([]string{"container", "inspect"}, ids...)...)
-	if err != nil {
-		return err
+	for i := range samples {
+		if contains(ids, samples[i].item.ID) {
+			samples[i].item.LimitBytes = nil
+			samples[i].item.HeadroomBytes = nil
+			samples[i].item.OOMKilled = nil
+			samples[i].item.Denominator = plugins.DockerMemoryDenominatorUnknown
+		}
 	}
-	var rows []struct {
-		ID   string `json:"Id"`
-		Host *struct {
-			Memory *int64 `json:"Memory"`
-		} `json:"HostConfig"`
-		State *struct {
-			OOMKilled *bool `json:"OOMKilled"`
-		} `json:"State"`
-	}
-	if json.Unmarshal(b, &rows) != nil {
-		return ErrInvalidResponse
-	}
-	seen := map[string]bool{}
-	for _, r := range rows {
-		id := strings.TrimPrefix(r.ID, "sha256:")
-		if !validID(id) || seen[id] {
+	for start := 0; start < len(ids); start += inspectBatch {
+		end := start + inspectBatch
+		if end > len(ids) {
+			end = len(ids)
+		}
+		b, err := p.call(ctx, "docker inspect", append([]string{"container", "inspect"}, ids[start:end]...)...)
+		if err != nil {
+			return err
+		}
+		var rows []struct {
+			ID   string `json:"Id"`
+			Host *struct {
+				Memory *int64 `json:"Memory"`
+			} `json:"HostConfig"`
+			State *struct {
+				OOMKilled *bool `json:"OOMKilled"`
+			} `json:"State"`
+		}
+		if json.Unmarshal(b, &rows) != nil {
 			return ErrInvalidResponse
 		}
-		seen[id] = true
-		for i := range samples {
-			if samples[i].item.ID != id {
-				continue
+		seen := []string{}
+		for _, r := range rows {
+			id := strings.TrimPrefix(r.ID, "sha256:")
+			if !validID(id) || contains(seen, id) || !contains(ids[start:end], id) {
+				return ErrInvalidResponse
 			}
-			a := &samples[i]
-			if r.Host != nil && r.Host.Memory != nil && *r.Host.Memory > 0 {
-				v := uint64(*r.Host.Memory)
-				a.item.LimitBytes = &v
-				a.item.Denominator = plugins.DockerMemoryDenominatorContainerLimit
-				if a.item.CurrentBytes != nil && *a.item.CurrentBytes <= v {
-					h := v - *a.item.CurrentBytes
-					a.item.HeadroomBytes = &h
+			seen = append(seen, id)
+			for i := range samples {
+				if samples[i].item.ID != id {
+					continue
 				}
-			} else if r.Host != nil && r.Host.Memory != nil && *r.Host.Memory == 0 {
-				a.item.Denominator = plugins.DockerMemoryDenominatorDaemonHost
-			} else {
-				a.item.Denominator = plugins.DockerMemoryDenominatorUnknown
+				a := &samples[i]
+				if r.Host != nil && r.Host.Memory != nil && *r.Host.Memory > 0 {
+					v := uint64(*r.Host.Memory)
+					a.item.LimitBytes = &v
+					a.item.Denominator = plugins.DockerMemoryDenominatorContainerLimit
+					if a.item.CurrentBytes != nil && *a.item.CurrentBytes <= v {
+						h := v - *a.item.CurrentBytes
+						a.item.HeadroomBytes = &h
+					} else if a.item.CurrentBytes != nil {
+						h := uint64(0)
+						a.item.HeadroomBytes = &h
+					}
+				} else if r.Host != nil && r.Host.Memory != nil && *r.Host.Memory == 0 {
+					a.item.Denominator = plugins.DockerMemoryDenominatorDaemonHost
+				} else {
+					a.item.Denominator = plugins.DockerMemoryDenominatorUnknown
+				}
+				if r.State != nil {
+					a.item.OOMKilled = r.State.OOMKilled
+				}
+				break
 			}
-			if r.State != nil {
-				a.item.OOMKilled = r.State.OOMKilled
-			}
-			break
 		}
-	}
-	if len(seen) != len(ids) {
-		return ErrInvalidResponse
+		if len(seen) != end-start {
+			return ErrInvalidResponse
+		}
 	}
 	return nil
 }
@@ -281,7 +311,7 @@ func parseBytes(s string) (uint64, bool) {
 				return 0, false
 			}
 			base := 1024.0
-			if u.suffix == "kB" || u.suffix == "MB" || u.suffix == "GB" || u.suffix == "TB" {
+			if u.suffix == "kB" || u.suffix == "KB" || u.suffix == "MB" || u.suffix == "GB" || u.suffix == "TB" {
 				base = 1000
 			}
 			factor := math.Pow(base, float64(u.power))
