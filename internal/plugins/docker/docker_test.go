@@ -56,8 +56,30 @@ func TestNativeDiskAndStats(t *testing.T) {
 	if e != nil || runtime.Details.Docker.Runtime[0].CPUPerc != "0.1%" {
 		t.Fatalf("runtime: %#v %v", runtime, e)
 	}
-	if strings.Join(r.args[0], " ") != "system df --format {{json .}}" || !containsArg(r.args[1], "--no-trunc") {
+	if strings.Join(r.args[0], " ") != "system df --format {{json .}}" || strings.Join(r.args[1], " ") != "stats --no-stream --no-trunc --format {{json .}}" {
 		t.Fatalf("unexpected CLI args: %#v", r.args)
+	}
+}
+
+func TestTargetSelectionContextAndNoUnqualifiedStats(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	r := &fakeRunner{outputs: [][]byte{[]byte(`{"ID":"` + id + `","Names":"api"}`), []byte(id + "\n"), []byte(`{"ID":"` + id + `","Name":"api","CPUPerc":"1%","MemUsage":"1/2","MemPerc":"50%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)}}
+	_, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Context: "dev", Containers: []string{"api"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsArg(r.args[0], "--context") || !containsArg(r.args[0], "dev") || !containsArg(r.args[2], "--") {
+		t.Fatalf("context/positional args: %#v", r.args)
+	}
+	r = &fakeRunner{outputs: [][]byte{[]byte(`{"ID":"` + id + `","Names":"api"}`)}}
+	_, err = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Containers: []string{"missing"}}})
+	if !errors.Is(err, plugins.ErrInvalid) || r.calls != 1 {
+		t.Fatalf("unmatched selector ran unsafe command: calls=%d err=%v", r.calls, err)
+	}
+	for _, bad := range []string{"bad;docker", "--help"} {
+		if _, err = New(&fakeRunner{}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig, Options: plugins.Options{Context: bad}}); !errors.Is(err, plugins.ErrInvalid) {
+			t.Fatalf("context %q: %v", bad, err)
+		}
 	}
 }
 func containsArg(args []string, want string) bool {
@@ -85,6 +107,13 @@ func TestEmptyAndInvalidResponses(t *testing.T) {
 		}
 	}
 }
+func listing(ids []string) []byte {
+	var b strings.Builder
+	for _, id := range ids {
+		fmt.Fprintf(&b, "{\"ID\":%q,\"Names\":%q}\n", id, "container")
+	}
+	return []byte(b.String())
+}
 func TestConfigEmptyAndPartialInspect(t *testing.T) {
 	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	good := `[{"Id":"` + id + `","Name":"/app","State":{"Status":"running"},"HostConfig":{"Memory":0,"Privileged":true,"NanoCpus":0,"PidsLimit":0,"ReadonlyRootfs":false,"LogConfig":{"Type":"json-file"}},"Config":{"Env":["SUPER_SECRET"],"Cmd":["SECRET_ARG"]}}]`
@@ -93,7 +122,7 @@ func TestConfigEmptyAndPartialInspect(t *testing.T) {
 	if e != nil || len(o.Details.Docker.Config) != 0 {
 		t.Fatalf("empty: %v %#v", e, o)
 	}
-	r = &fakeRunner{outputs: [][]byte{[]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"), []byte(good)}}
+	r = &fakeRunner{outputs: [][]byte{listing([]string{"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}), []byte(good)}}
 	o, e = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
 	if e != nil || len(o.Details.Docker.Config) != 1 || len(o.Findings) != 2 || !strings.Contains(o.Findings[0].Summary, id) {
 		t.Fatalf("inspect: %v %#v", e, o)
@@ -102,12 +131,12 @@ func TestConfigEmptyAndPartialInspect(t *testing.T) {
 	if strings.Contains(string(encoded), "SUPER_SECRET") || strings.Contains(string(encoded), "SECRET_ARG") {
 		t.Fatal("secret config data leaked")
 	}
-	r = &fakeRunner{outputs: [][]byte{[]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"), []byte("[]")}}
+	r = &fakeRunner{outputs: [][]byte{listing([]string{"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}), []byte("[]")}}
 	o, e = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
 	if e == nil || o.Status != plugins.StatusPartial {
 		t.Fatalf("missing batch should be partial: %v %#v", e, o)
 	}
-	r = &fakeRunner{outputs: [][]byte{[]byte(id + "\n"), []byte(`[{"Id":"` + id + `","Name":"/x","State":{"Status":"running"},"HostConfig":{}}]`)}}
+	r = &fakeRunner{outputs: [][]byte{listing([]string{id}), []byte(`[{"Id":"` + id + `","Name":"/x","State":{"Status":"running"},"HostConfig":{}}]`)}}
 	o, e = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
 	if e == nil || o.Status != plugins.StatusPartial {
 		t.Fatal("missing host config evidence must be partial")
@@ -131,7 +160,7 @@ func TestConfigFailureDiagnostics(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := fmt.Sprintf(`[{"Id":%q,"Name":%q,"RestartCount":%d,"State":{"Status":%q%s},"HostConfig":{"Memory":1,"Privileged":false}}]`, id, "/"+tc.name, tc.restarts, tc.status, tc.fields)
-			o, err := New(&fakeRunner{outputs: [][]byte{[]byte(id + "\n"), []byte(payload)}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+			o, err := New(&fakeRunner{outputs: [][]byte{listing([]string{id}), []byte(payload)}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -335,7 +364,7 @@ func TestDockerConfigInspectTimeoutStopsLaterBatches(t *testing.T) {
 	runner := runnerFunc(func(_ context.Context, args ...string) ([]byte, error) {
 		calls++
 		if args[0] == "ps" {
-			return []byte(strings.Join(ids, "\n")), nil
+			return listing(ids), nil
 		}
 		if calls == 2 {
 			return []byte("[]"), nil
@@ -360,7 +389,7 @@ func TestInspectFailureDoesNotDiscardLaterBatch(t *testing.T) {
 		ids[i] = fmt.Sprintf("%064x", i+1)
 	}
 	second := `[{"Id":"` + ids[50] + `","Name":"/last","State":{"Status":"running"},"HostConfig":{"Memory":1,"Privileged":false}}]`
-	r := &fakeRunner{outputs: [][]byte{[]byte(strings.Join(ids, "\n")), nil, []byte(second)}}
+	r := &fakeRunner{outputs: [][]byte{listing(ids), nil, []byte(second)}}
 	r.errs = []error{nil, errors.New("sensitive daemon stderr"), nil}
 	o, e := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
 	if e == nil || len(o.Details.Docker.Config) != 1 || o.Details.Docker.Config[0].ID != ids[50] {

@@ -47,9 +47,12 @@ var (
 )
 
 type Options struct {
-	Path     string   `json:"path,omitempty"`
-	Excludes []string `json:"excludes,omitempty"`
-	TopN     int      `json:"top_n,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	Excludes   []string `json:"excludes,omitempty"`
+	TopN       int      `json:"top_n,omitempty"`
+	Context    string   `json:"context,omitempty"`
+	Containers []string `json:"containers,omitempty"`
+	Project    string   `json:"project,omitempty"`
 }
 type Request struct {
 	Operation OperationID `json:"operation,omitempty"`
@@ -60,6 +63,8 @@ type SupportedOptions struct {
 	Excludes    bool `json:"excludes,omitempty"`
 	TopN        bool `json:"top_n,omitempty"`
 	RequirePath bool `json:"require_path,omitempty"`
+	Context     bool `json:"context,omitempty"`
+	Containers  bool `json:"containers,omitempty"`
 }
 type Operation struct {
 	ID      OperationID      `json:"id"`
@@ -277,7 +282,7 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 	}
 	for _, op := range selected {
 		opts := req.Options
-		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || (op.Options.RequirePath && opts.Path == "") {
+		if opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)
 		}
 	}

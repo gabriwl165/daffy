@@ -87,6 +87,28 @@ func runFake(t *testing.T, p *fakePlugin, args ...string) (int, string, string) 
 	return code, out.String(), errOut.String()
 }
 
+func TestDockerContextContainerFlagsReachPluginsRunAndAlias(t *testing.T) {
+	for _, args := range [][]string{{"plugins", "run", "docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker"}, {"docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker"}} {
+		p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationRuntime, true, plugins.SupportedOptions{Context: true, Containers: true})}}}
+		var out, errOut bytes.Buffer
+		code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errOut, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+		if code != 0 || len(p.calls) != 1 || p.calls[0].Options.Context != "local-dev" || strings.Join(p.calls[0].Options.Containers, ",") != "api,worker" {
+			t.Fatalf("args=%v code=%d request=%#v err=%s", args, code, p.calls, errOut.String())
+		}
+	}
+}
+
+func TestDockerContainerFlagRejectedForDiskAndBundle(t *testing.T) {
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{Context: true}), op(plugins.OperationRuntime, true, plugins.SupportedOptions{Context: true, Containers: true})}}}
+	for _, args := range [][]string{{"plugins", "run", "docker", "disk", "--container", "api"}, {"plugins", "run", "docker", "--container", "api"}} {
+		var out, errOut bytes.Buffer
+		code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errOut, Deps: Deps{Plugins: fakeRegistry(t, p)}})
+		if code == 0 || len(p.calls) != 0 {
+			t.Fatalf("accepted %v code=%d calls=%v", args, code, p.calls)
+		}
+	}
+}
+
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("writer failed") }
