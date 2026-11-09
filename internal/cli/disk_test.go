@@ -24,6 +24,12 @@ func TestDiskFlags(t *testing.T) {
 	if p, c, e = diskFlags(nil); e != nil || len(p) != 0 || c.top != 20 {
 		t.Fatalf("default path must be omitted: %v %+v %v", p, c, e)
 	}
+	if _, c, e := diskFlags([]string{"--verbose"}); e != nil || !c.verbose {
+		t.Fatalf("verbose flag: %+v %v", c, e)
+	}
+	if _, _, e := diskFlags([]string{"--verbose=true"}); e == nil {
+		t.Fatal("verbose must not accept a value")
+	}
 	for _, a := range [][]string{{"--top", "2oops"}, {"--top", "1001"}, {"--json=garbage"}, {"--format", "xml"}, {"--time-budget", "-1s"}} {
 		if _, _, e := diskFlags(a); e == nil {
 			t.Errorf("accepted %v", a)
@@ -139,6 +145,59 @@ func TestDiskTextSanitizationAndSizes(t *testing.T) {
 	}
 }
 
+func TestDiskPermissionVerbosityAndJSON(t *testing.T) {
+	permission := disk.Issue{Path: "/private\n\x1b", Operation: disk.OperationReadDir, Error: "denied", Kind: disk.IssueKindPermission}
+	other := disk.Issue{Path: "/io", Operation: disk.OperationLstat, Error: "I/O failed", Kind: disk.IssueKindOther}
+	makeReport := func(counter int64) disk.Report {
+		return disk.Report{Root: "/", Issues: []disk.Issue{permission, other}, Coverage: disk.Coverage{PermissionErrors: counter, Complete: false, SkippedEntries: 1}}
+	}
+	var normal, verbose bytes.Buffer
+	if err := printDisk(&normal, makeReport(5)); err != nil {
+		t.Fatal(err)
+	}
+	if err := printDiskOptions(&verbose, makeReport(5), true); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{normal.String(), verbose.String()} {
+		if !strings.Contains(s, "I/O failed") || !strings.Contains(s, "Results are partial") {
+			t.Fatalf("lost EIO/partial status: %q", s)
+		}
+		if strings.Contains(strings.ToLower(s), "sudo") {
+			t.Fatalf("sudo advice: %q", s)
+		}
+	}
+	if !strings.Contains(normal.String(), "5 permission errors; use --verbose for details.") || strings.Contains(normal.String(), "denied") || !strings.Contains(normal.String(), "SCAN ISSUES") {
+		t.Fatalf("default output: %q", normal.String())
+	}
+	if !strings.Contains(verbose.String(), "denied") || strings.Contains(verbose.String(), "permission errors; use --verbose") || strings.ContainsAny(verbose.String(), "\x1b\r") {
+		t.Fatalf("verbose output: %q", verbose.String())
+	}
+	for _, counter := range []int64{0, 1} {
+		var b bytes.Buffer
+		if err := printDisk(&b, disk.Report{Issues: []disk.Issue{permission}, Coverage: disk.Coverage{PermissionErrors: counter}}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "1 permission error;") {
+			t.Fatalf("retained fallback counter %d: %q", counter, b.String())
+		}
+		if strings.Contains(b.String(), "SCAN ISSUES") || strings.Contains(b.String(), "denied") {
+			t.Fatalf("permission-only report leaked details or an empty section: %q", b.String())
+		}
+	}
+	d := Deps{Disk: diskFunc(func(context.Context, disk.Config) (disk.Report, error) { return makeReport(5), nil })}
+	outputs := make([]string, 2)
+	for i, args := range [][]string{{"disk", "--json"}, {"disk", "--json", "--verbose"}} {
+		var out, errout bytes.Buffer
+		if code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errout, Deps: d}); code != 0 || errout.Len() != 0 {
+			t.Fatalf("json run %v: %d %q", args, code, errout.String())
+		}
+		outputs[i] = out.String()
+	}
+	if outputs[0] != outputs[1] || !json.Valid([]byte(outputs[0])) {
+		t.Fatalf("JSON differs by verbosity: %q / %q", outputs[0], outputs[1])
+	}
+}
+
 func TestDiskTextLayoutDiagnosticsAndBounds(t *testing.T) {
 	var b bytes.Buffer
 	r := disk.Report{Root: "/root", Coverage: disk.Coverage{Mounts: 2, ScannedMounts: 2, SkippedMounts: 1, Complete: true}, Mounts: []disk.MountCapacity{{Path: "/m\n\x1b", TotalBytes: 100, AvailableBytes: 25, TotalInodes: 100, FreeInodes: 0}, {Path: "/zero", TotalBytes: 0, AvailableBytes: 0}, {Path: "/bad", TotalBytes: 10, AvailableBytes: 20}}, TopFiles: []disk.FileEntry{{Path: "/f\r\x1b", AllocatedBytes: 5}, {Path: "/g", AllocatedBytes: 9}}, Issues: []disk.Issue{{Path: "/p\n", Operation: "read-dir\x1b", Error: "denied\r\x1b"}}}
@@ -189,51 +248,5 @@ func TestDiskDiagnosticLocationsAndInvalidInodes(t *testing.T) {
 	}
 	if strings.Index(s, "DIAGNOSTICS") > strings.Index(s, "LARGEST FILES") {
 		t.Fatalf("findings should precede rankings: %q", s)
-	}
-}
-
-func TestDiskPermissionGuidance(t *testing.T) {
-	permissionReport := disk.Report{Issues: []disk.Issue{
-		{Path: "/run/systemd-private", Error: "permission denied"},
-		{Path: "/private", Error: "operation not permitted"},
-	}}
-	for _, tc := range []struct {
-		name     string
-		report   disk.Report
-		format   string
-		wantHint bool
-	}{
-		{name: "multiple permission errors", report: permissionReport, wantHint: true},
-		{name: "unrelated error", report: disk.Report{Issues: []disk.Issue{{Error: "input/output error"}}}},
-		{name: "json", report: permissionReport, format: "--json"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d := Deps{Disk: diskFunc(func(context.Context, disk.Config) (disk.Report, error) { return tc.report, nil })}
-			var out, errout bytes.Buffer
-			args := []string{"disk"}
-			if tc.format != "" {
-				args = append(args, tc.format)
-			}
-			if code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errout, Deps: d}); code != 0 {
-				t.Fatalf("exit=%d output=%q", code, out.String())
-			}
-			gotHint := strings.Contains(out.String(), "Permission errors:")
-			if gotHint != tc.wantHint {
-				t.Fatalf("hint=%t output=%q", gotHint, out.String())
-			}
-			if tc.wantHint {
-				if strings.Count(out.String(), "Permission errors:") != 1 {
-					t.Fatalf("expected one permission hint: %q", out.String())
-				}
-				for _, tip := range []string{`daffy disk "$HOME"`, "--exclude PATH", "sudo daffy disk", "not counted", "may still be restricted"} {
-					if !strings.Contains(out.String(), tip) {
-						t.Errorf("missing guidance %q: %q", tip, out.String())
-					}
-				}
-			}
-			if tc.format == "--json" && (strings.Contains(out.String(), "daffy disk") || !strings.Contains(out.String(), `"issues"`)) {
-				t.Fatalf("JSON report changed or contains human hint: %q", out.String())
-			}
-		})
 	}
 }
