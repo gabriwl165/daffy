@@ -283,6 +283,11 @@ func printDisk(w io.Writer, r disk.Report) error {
 			return e
 		}
 	}
+	if hasPermissionIssue(r.Issues) {
+		if _, e := fmt.Fprintln(w, `Permission errors: try `+"`daffy disk \"$HOME\"`"+` to scan your home directory, or use `+"`--exclude PATH`"+` for trees you intentionally omit. Inaccessible and excluded content is not counted. Only if daffy is trusted and you are authorized to read more, consider `+"`sudo daffy disk`"+`; elevated access may still be restricted.`); e != nil {
+			return e
+		}
+	}
 	return nil
 }
 
@@ -328,6 +333,17 @@ func inodeUsage(free, total uint64) string {
 	}
 	return fmt.Sprintf("%d%% free", ratioPercent(free, total))
 }
+
+func hasPermissionIssue(issues []disk.Issue) bool {
+	for _, issue := range issues {
+		err := strings.ToLower(issue.Error)
+		if strings.Contains(err, "permission denied") || strings.Contains(err, "operation not permitted") {
+			return true
+		}
+	}
+	return false
+}
+
 func bytesText(v int64) string {
 	if v < 0 {
 		return "unknown"

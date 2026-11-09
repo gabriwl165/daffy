@@ -142,6 +142,10 @@ reclaimable bytes; parent and child directory totals overlap.
 
 Whole-machine scans can be expensive. Symlinks are not followed, excluded mounts
 are not traversed, and permission failures are reported as incomplete coverage.
+For permission errors, narrow the scan with `daffy disk "$HOME"`, deliberately
+exclude an unreadable tree with `--exclude PATH`, or explicitly run a trusted
+binary with elevated access when authorized. Installing as root does not grant
+runtime permissions; see [permission guidance](docs/disk-profiling.md#permission-denied).
 A time budget returns partial results with a nonzero exit code; cancellation
 also preserves partial results. Budgets are checked between I/O operations, not
 guaranteed to interrupt blocked kernel calls. Paths can reveal personal data.

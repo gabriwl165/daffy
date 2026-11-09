@@ -191,3 +191,49 @@ func TestDiskDiagnosticLocationsAndInvalidInodes(t *testing.T) {
 		t.Fatalf("findings should precede rankings: %q", s)
 	}
 }
+
+func TestDiskPermissionGuidance(t *testing.T) {
+	permissionReport := disk.Report{Issues: []disk.Issue{
+		{Path: "/run/systemd-private", Error: "permission denied"},
+		{Path: "/private", Error: "operation not permitted"},
+	}}
+	for _, tc := range []struct {
+		name     string
+		report   disk.Report
+		format   string
+		wantHint bool
+	}{
+		{name: "multiple permission errors", report: permissionReport, wantHint: true},
+		{name: "unrelated error", report: disk.Report{Issues: []disk.Issue{{Error: "input/output error"}}}},
+		{name: "json", report: permissionReport, format: "--json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := Deps{Disk: diskFunc(func(context.Context, disk.Config) (disk.Report, error) { return tc.report, nil })}
+			var out, errout bytes.Buffer
+			args := []string{"disk"}
+			if tc.format != "" {
+				args = append(args, tc.format)
+			}
+			if code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errout, Deps: d}); code != 0 {
+				t.Fatalf("exit=%d output=%q", code, out.String())
+			}
+			gotHint := strings.Contains(out.String(), "Permission errors:")
+			if gotHint != tc.wantHint {
+				t.Fatalf("hint=%t output=%q", gotHint, out.String())
+			}
+			if tc.wantHint {
+				if strings.Count(out.String(), "Permission errors:") != 1 {
+					t.Fatalf("expected one permission hint: %q", out.String())
+				}
+				for _, tip := range []string{`daffy disk "$HOME"`, "--exclude PATH", "sudo daffy disk", "not counted", "may still be restricted"} {
+					if !strings.Contains(out.String(), tip) {
+						t.Errorf("missing guidance %q: %q", tip, out.String())
+					}
+				}
+			}
+			if tc.format == "--json" && (strings.Contains(out.String(), "daffy disk") || !strings.Contains(out.String(), `"issues"`)) {
+				t.Fatalf("JSON report changed or contains human hint: %q", out.String())
+			}
+		})
+	}
+}
