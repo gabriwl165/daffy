@@ -58,10 +58,12 @@ included by default. Evidence is limited to 20 diagnostic containers, 64 KiB of
 logs per container and 1 MiB of log text overall, plus bounded health entries.
 Truncation and unavailable evidence are explicit. Docker's event retention is
 limited: history cannot prove a crash loop is absent. Investigation commands
-share the config operation's timeout. CLI flags are added in the later CLI PR.
+share the config operation's timeout. Use `daffy docker config --investigate`,
+optionally with `--log-tail N`; selectors and `--timeout` remain available.
 
 Raw inspection documents, environment variables, command arguments and raw
-command stderr are not included in reports. Container names and identifiers can
+command failure stderr are not included in reports. Opt-in application log
+evidence can include the container's stderr. Container names and identifiers can
 still be sensitive. Docker daemon access is highly privileged even when the
 commands issued by Daffy are read-only. Command time, output and inspected
 container counts are bounded; incomplete collection must be visible in reports.
@@ -127,7 +129,8 @@ or cancellation. Pressure counts use the requested memory threshold, or 80% when
 unspecified; sustained pressure means at least two high observations and at least
 half the valid percentage samples. This is a sampling heuristic, not a diagnosis.
 Growth does not prove a leak, and Docker memory statistics are not heap profiles.
-CLI flags are introduced in the later CLI PR.
+Use `daffy docker runtime --memory-details --runtime-sort memory`, optionally
+with the sampling and threshold flags above. `--runtime-sort cpu` ranks by CPU.
 
 Disk drill-down is also opt-in:
 
@@ -163,7 +166,9 @@ matches Docker selection. Inaccessible, remote, VM-backed, other-platform, or
 unverified filesystems are explicitly unavailable, not replaced with client disk
 usage. Less than 10% available bytes or inodes produces an observational warning.
 Permission restrictions can prevent verification even for a local daemon.
-CLI flags are introduced in the later CLI PR.
+Use `--image-filter`, `--disk-sort`, and `--host-capacity` with an explicit
+`daffy docker disk` operation. See [Docker troubleshooting](docker-profiling.md)
+for examples and interpretation limits.
 
 ### Bazel
 
@@ -178,6 +183,12 @@ apply. Exclusions are explicit paths; selecting a directory does not establish a
 container or sandbox boundary.
 
 ## Execution and output
+
+Docker text output is concise by default; `--verbose` retains the full inventory.
+The default Docker bundle checks config, runtime, then disk. Concise bundle output
+streams completed observations before subsequent operations start, so slow disk
+accounting does not hide earlier container findings. JSON remains one final
+structured report. Findings are observational; no containers or storage are changed.
 
 `--timeout` is a per-operation budget (default: 15 seconds). Operations run
 sequentially, each with a fresh budget: a slow Docker disk check does not prevent

@@ -79,3 +79,37 @@ A slow disk query must produce an explicit incomplete report, not a healthy empt
 result. The verbose disk fixtures are source-derived/synthetic for CLI v29.1.3,
 not captured proof of every Docker version. SIGINT during repeated sampling must
 exit 130 and preserve the completed sample count. Keep local reports private.
+
+## Docker profiling regression evidence
+
+- Crash fixtures distinguish exit 137 from a recorded OOM kill, exclude retained
+  stopped-container health from current failures, and verify opt-in evidence
+  privacy, separate lifecycle counts, scoped stderr forwarding, combined output
+  limits, cancellation, and partial evidence preservation.
+- Memory fixtures exercise decimal/binary units, non-finite and overflow values,
+  usage versus capacity, absolute-byte ranking, limits/headroom/OOM/unknown state,
+  inspect identity mismatches, selector/context propagation, sampled pressure,
+  and preservation on cancellation. Growth observations are not leak diagnosis.
+- Storage fixtures cover image references and filters, rounded size sorting,
+  malformed numbers, effective Docker context precedence, capacity and inode
+  pressure, warning preservation, and local-verifier rejection cases. Linux
+  filesystem checks require matching socket owner, mount namespace, and root;
+  inaccessible or ambiguous daemon storage must remain unavailable.
+- CLI fixtures verify typed option routing, concise versus verbose output,
+  sanitization, JSON compatibility, and operation observation before slow storage.
+
+These tests do not prove compatibility with every Docker version, event retention
+policy, logging driver, cgroup arrangement, or remote host. Do not manufacture
+crashes, OOM conditions, or storage pressure for a live smoke check. Investigation
+is explicitly sensitive: logs and health-check output may contain secrets.
+See [Docker troubleshooting](docker-profiling.md) for the command workflow.
+
+The integrated profiling stack was checked with formatting, `go vet ./...`,
+`go test -race ./...`, and a native build. Cross-compilation passed for Darwin
+ARM64/AMD64, Windows AMD64, and Linux ARM64. A production-binary smoke test with a
+temporary fixture Docker executable established default privacy, opt-in stdout
+and stderr logs plus health evidence, sampled memory, unused-image filtering,
+remote-capacity rejection, and runtime output before delayed disk completion.
+No real Docker daemon, containers, or images were changed during verification;
+fixture evidence does not replace native-platform or real-daemon compatibility
+testing.

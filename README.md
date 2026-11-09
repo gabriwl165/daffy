@@ -112,6 +112,9 @@ usage exits 2. Interrupted commands exit 130.
 Use `daffy docker` and `daffy bazel` directly; no `plugins run` prefix is needed.
 Use `daffy plugins list` to discover available analyses. See
 [analysis plugins](docs/plugins.md) for scope, safety, and extension architecture.
+For crash investigation, sampled memory diagnostics, and unused-image filters,
+see [Docker troubleshooting](docs/docker-profiling.md). Investigation logs are
+explicitly opt-in and may contain secrets; profiling never restarts or prunes.
 These analyses run only when explicitly requested.
 
 <details>
