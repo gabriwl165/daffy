@@ -3,11 +3,13 @@ package disk
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 )
 
@@ -135,7 +137,11 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 	mounts, e := s.platform.Mounts()
 	if e != nil {
 		report.Coverage.Complete = false
-		report.Issues = append(report.Issues, Issue{Path: selected, Operation: OperationMountDiscovery, Error: e.Error()})
+		kind := classifyIssueError(e)
+		report.Issues = append(report.Issues, Issue{Path: selected, Operation: OperationMountDiscovery, Error: e.Error(), Kind: kind})
+		if kind == IssueKindPermission {
+			report.Coverage.PermissionErrors++
+		}
 		return report, fmt.Errorf("discover mounts: %w", e)
 	}
 	plan, e := BuildMountPlan(mounts, c.Path, c.Excludes)
@@ -143,12 +149,26 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 		report.Coverage.Complete = false
 		report.Coverage.Mounts = len(mounts)
 		report.Coverage.SkippedMounts = 1
-		report.Issues = append(report.Issues, Issue{Path: selected, Operation: OperationPlan, Error: e.Error()})
+		kind := classifyIssueError(e)
+		report.Issues = append(report.Issues, Issue{Path: selected, Operation: OperationPlan, Error: e.Error(), Kind: kind})
+		if kind == IssueKindPermission {
+			report.Coverage.PermissionErrors++
+		}
 		return report, e
 	}
-	addIssue := func(path string, op Operation, message string, isError bool) {
+	addIssue := func(path string, op Operation, message string, isError bool, causes ...error) {
+		kind := IssueKindOther
+		for _, cause := range causes {
+			if classifyIssueError(cause) == IssueKindPermission {
+				kind = IssueKindPermission
+				break
+			}
+		}
+		if kind == IssueKindPermission {
+			report.Coverage.PermissionErrors++
+		}
 		if len(report.Issues) < MaxReportIssues {
-			report.Issues = append(report.Issues, Issue{Path: path, Operation: op, Error: message})
+			report.Issues = append(report.Issues, Issue{Path: path, Operation: op, Error: message, Kind: kind})
 		} else if isError {
 			report.Coverage.OmittedErrors++
 		}
@@ -187,7 +207,7 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 		}
 		cap, ce := s.platform.Capacity(m.Path)
 		if ce != nil {
-			addIssue(m.Path, OperationCapacity, ce.Error(), true)
+			addIssue(m.Path, OperationCapacity, ce.Error(), true, ce)
 		} else {
 			cap.Path = m.Path
 			cap.Filesystem = m.Filesystem
@@ -215,12 +235,12 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 		}
 		fi, e := d.Stat()
 		if e != nil {
-			addIssue(path, OperationStat, e.Error(), true)
+			addIssue(path, OperationStat, e.Error(), true, e)
 			return total, nil
 		}
 		meta, e := entryMetadata(fi)
 		if e != nil {
-			addIssue(path, OperationMetadata, e.Error(), true)
+			addIssue(path, OperationMetadata, e.Error(), true, e)
 			return total, nil
 		}
 		if e = ctx.Err(); e != nil {
@@ -248,7 +268,7 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 					}
 					cm, me := d.ChildMetadata(name)
 					if me != nil {
-						addIssue(childPath, OperationMetadata, me.Error(), true)
+						addIssue(childPath, OperationMetadata, me.Error(), true, me)
 						continue
 					}
 					if ce := ctx.Err(); ce != nil {
@@ -258,13 +278,13 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 					if cm.Mode.IsDir() {
 						cd, oe := d.OpenChild(name)
 						if oe != nil {
-							addIssue(childPath, OperationOpenDirectory, oe.Error(), true)
+							addIssue(childPath, OperationOpenDirectory, oe.Error(), true, oe)
 							continue
 						}
 						child, e = walk(cd, childPath, false)
 						closeErr := cd.Close()
 						if closeErr != nil {
-							addIssue(childPath, OperationCloseDirectory, closeErr.Error(), true)
+							addIssue(childPath, OperationCloseDirectory, closeErr.Error(), true, closeErr)
 						}
 						total.ApparentBytes += child.ApparentBytes
 						total.AllocatedBytes += child.AllocatedBytes
@@ -292,7 +312,7 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 					break
 				}
 				if re != nil {
-					addIssue(path, OperationReadDir, re.Error(), true)
+					addIssue(path, OperationReadDir, re.Error(), true, re)
 					break
 				}
 				if ce := ctx.Err(); ce != nil {
@@ -327,7 +347,7 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 		d, oe := s.open(path)
 		if oe != nil {
 			report.Coverage.SkippedMounts++
-			addIssue(path, OperationOpenMount, oe.Error(), true)
+			addIssue(path, OperationOpenMount, oe.Error(), true, oe)
 			if c.Path != "" {
 				return report, fmt.Errorf("open scan root %q: %w", path, oe)
 			}
@@ -339,7 +359,7 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 		report.Totals.ApparentBytes += totals.ApparentBytes
 		report.Totals.AllocatedBytes += totals.AllocatedBytes
 		if closeErr != nil {
-			addIssue(path, OperationCloseDirectory, closeErr.Error(), true)
+			addIssue(path, OperationCloseDirectory, closeErr.Error(), true, closeErr)
 		}
 		if walkErr != nil {
 			report.Coverage.Complete = false
@@ -353,6 +373,13 @@ func (s *scanner) Scan(parent context.Context, c Config) (report Report, retErr 
 	finishRanking(&report, files, dirs)
 	finalized = true
 	return report, nil
+}
+
+func classifyIssueError(err error) IssueKind {
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM) {
+		return IssueKindPermission
+	}
+	return IssueKindOther
 }
 
 func rootForMount(m Mount, selected string, explicit bool) string {
