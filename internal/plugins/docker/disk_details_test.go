@@ -81,7 +81,7 @@ func TestImageDiagnosticsFilterSortUnknownAndHostUnavailable(t *testing.T) {
 		}
 	}
 	oldProbe := probeFilesystem
-	probeFilesystem = func(root, endpoint string) (filesystemCapacity, plugins.DockerHostUnavailableReason) {
+	probeFilesystem = func(_ context.Context, root, endpoint string) (filesystemCapacity, plugins.DockerHostUnavailableReason) {
 		if root != "/local/root" || endpoint != "/var/run/docker.sock" {
 			t.Errorf("probe inputs %q %q", root, endpoint)
 		}
@@ -103,7 +103,7 @@ func TestImageDiagnosticsFilterSortUnknownAndHostUnavailable(t *testing.T) {
 func TestHostCapacityInjectedProbeAndPressure(t *testing.T) {
 	old := probeFilesystem
 	defer func() { probeFilesystem = old }()
-	probeFilesystem = func(string, string) (filesystemCapacity, plugins.DockerHostUnavailableReason) {
+	probeFilesystem = func(context.Context, string, string) (filesystemCapacity, plugins.DockerHostUnavailableReason) {
 		return filesystemCapacity{total: 1000, free: 100, available: 150, inodesTotal: 100, inodesFree: 5}, ""
 	}
 	r := &fakeRunner{outputs: [][]byte{[]byte(`"unix:///tmp/docker.sock"`), []byte(`"/var/lib/docker"`), []byte(`{"Type":"Images","TotalCount":"0","Active":"0","Size":"0B","Reclaimable":"0B"}`), []byte(emptyDiskEnvelope)}}
@@ -115,6 +115,9 @@ func TestHostCapacityInjectedProbeAndPressure(t *testing.T) {
 	if !h.Available || h.LowBytes || !h.LowInodes || *h.BytesAvailable != 150 || *h.InodesFree != 5 {
 		t.Fatalf("capacity: %#v", h)
 	}
+	if !contains(o.Details.Docker.Storage.Warnings, "Daemon filesystem has less than 10% available inodes.") {
+		t.Fatalf("capacity warning lost: %#v", o.Details.Docker.Storage.Warnings)
+	}
 }
 
 func TestDockerByteParserRejectsNonFiniteAndOverflow(t *testing.T) {
@@ -122,6 +125,42 @@ func TestDockerByteParserRejectsNonFiniteAndOverflow(t *testing.T) {
 		if got := parseDockerBytes(value); got != nil {
 			t.Errorf("%q parsed as %d", value, *got)
 		}
+	}
+}
+
+func TestDockerContextEnvironmentOverridesDockerHost(t *testing.T) {
+	t.Setenv("DOCKER_CONTEXT", "remote-env")
+	t.Setenv("DOCKER_HOST", "unix:///tmp/local.sock")
+	old := probeFilesystem
+	defer func() { probeFilesystem = old }()
+	probed := false
+	probeFilesystem = func(context.Context, string, string) (filesystemCapacity, plugins.DockerHostUnavailableReason) {
+		probed = true
+		return filesystemCapacity{}, ""
+	}
+	r := &fakeRunner{outputs: [][]byte{[]byte(`"tcp://remote.example:2376"`), []byte(`{"Type":"Images","TotalCount":"0","Active":"0","Size":"0B","Reclaimable":"0B"}`), []byte(emptyDiskEnvelope)}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk, Options: plugins.Options{HostCapacity: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := o.Details.Docker.Storage.HostCapacity
+	if probed || h == nil || h.Available || h.UnavailableReason != plugins.DockerHostReasonRemote {
+		t.Fatalf("context env ignored: %#v probed=%v", h, probed)
+	}
+}
+
+func TestExplicitDockerContextOverridesContextEnvironment(t *testing.T) {
+	t.Setenv("DOCKER_CONTEXT", "remote-env")
+	t.Setenv("DOCKER_HOST", "tcp://also-remote:2376")
+	old := probeFilesystem
+	defer func() { probeFilesystem = old }()
+	probeFilesystem = func(_ context.Context, _, _ string) (filesystemCapacity, plugins.DockerHostUnavailableReason) {
+		return filesystemCapacity{total: 100, available: 50, free: 50}, ""
+	}
+	r := &fakeRunner{outputs: [][]byte{[]byte(`"unix:///var/run/docker.sock"`), []byte(`"/var/lib/docker"`), []byte(`{"Type":"Images","TotalCount":"0","Active":"0","Size":"0B","Reclaimable":"0B"}`), []byte(emptyDiskEnvelope)}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk, Options: plugins.Options{Context: "localctx", HostCapacity: true}})
+	if err != nil || !o.Details.Docker.Storage.HostCapacity.Available {
+		t.Fatalf("explicit context did not win: %#v %v", o, err)
 	}
 }
 

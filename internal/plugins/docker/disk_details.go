@@ -94,10 +94,15 @@ func (p *Plugin) diskDetails(ctx context.Context, d *plugins.DockerDetails, o *p
 	}
 	d.Images = imageDiagnostics(*env.Images)
 	capacity := (*plugins.DockerHostCapacity)(nil)
+	warnings, limits := []string{}, []string{}
 	if d.Storage != nil {
 		capacity = d.Storage.HostCapacity
+		warnings = append(warnings, d.Storage.Warnings...)
+		limits = append(limits, d.Storage.Limits...)
 	}
-	d.Storage = &plugins.DockerStorage{SharedLayers: true, SizeTotalsComparable: false, Warnings: []string{"Image sizes include shared layers and must not be summed as reclaimable storage."}, Limits: []string{"Image reference counts are Docker daemon accounting and do not establish deletion safety."}, HostCapacity: capacity}
+	warnings = append(warnings, "Image sizes include shared layers and must not be summed as reclaimable storage.")
+	limits = append(limits, "Image reference counts are Docker daemon accounting and do not establish deletion safety.")
+	d.Storage = &plugins.DockerStorage{SharedLayers: true, SizeTotalsComparable: false, Warnings: warnings, Limits: limits, HostCapacity: capacity}
 	return nil
 }
 

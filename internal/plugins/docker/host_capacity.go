@@ -10,18 +10,25 @@ import (
 )
 
 type filesystemCapacity struct{ total, free, available, inodesTotal, inodesFree uint64 }
-type filesystemProbe func(root, endpoint string) (filesystemCapacity, plugins.DockerHostUnavailableReason)
+type filesystemProbe func(context.Context, string, string) (filesystemCapacity, plugins.DockerHostUnavailableReason)
 
 var probeFilesystem filesystemProbe = verifyFilesystem
 
 func initHostCapacity(ctx context.Context, p *Plugin, d *plugins.DockerDetails) {
 	state := &plugins.DockerHostCapacity{Available: false, UnavailableReason: plugins.DockerHostReasonUnverified}
-	d.Storage = &plugins.DockerStorage{SharedLayers: true, SizeTotalsComparable: false, Warnings: []string{"Docker image sizes include shared layers and are not additive."}, Limits: []string{"Reference state does not establish deletion safety."}, HostCapacity: state}
-	endpoint := os.Getenv("DOCKER_HOST")
-	if targetContext(ctx) != "" || endpoint == "" {
+	d.Storage = &plugins.DockerStorage{HostCapacity: state}
+	selectedContext := targetContext(ctx)
+	if selectedContext == "" {
+		selectedContext = os.Getenv("DOCKER_CONTEXT")
+	}
+	endpoint := ""
+	if selectedContext == "" {
+		endpoint = os.Getenv("DOCKER_HOST")
+	}
+	if selectedContext != "" || endpoint == "" {
 		args := []string{"context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"}
-		if targetContext(ctx) != "" {
-			args = append(args, targetContext(ctx))
+		if selectedContext != "" {
+			args = append(args, selectedContext)
 		}
 		endpointOut, err := p.call(ctx, "docker context endpoint", args...)
 		if err != nil {
@@ -45,7 +52,7 @@ func initHostCapacity(ctx context.Context, p *Plugin, d *plugins.DockerDetails) 
 		state.UnavailableReason = plugins.DockerHostReasonRootUnavailable
 		return
 	}
-	capacity, reason := probeFilesystem(root, strings.TrimPrefix(endpoint, "unix://"))
+	capacity, reason := probeFilesystem(ctx, root, strings.TrimPrefix(endpoint, "unix://"))
 	if reason != "" {
 		state.UnavailableReason = reason
 		return
