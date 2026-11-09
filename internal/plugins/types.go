@@ -203,6 +203,7 @@ type DockerRuntimeTrendItem struct {
 	PeakMemoryPercent       float64 `json:"peak_memory_percent"`
 	CPUThresholdExceeded    bool    `json:"cpu_threshold_exceeded"`
 	MemoryThresholdExceeded bool    `json:"memory_threshold_exceeded"`
+	PeakMemoryBytes         uint64  `json:"peak_memory_bytes,omitempty"`
 }
 type BazelDetails struct {
 	Disk *disk.Report `json:"disk,omitempty"`

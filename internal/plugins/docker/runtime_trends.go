@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"sort"
 	"strconv"
@@ -19,13 +20,19 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 	if n < 1 || n > 60 || opts.Interval < 0 || opts.Interval > time.Minute || n > 1 && opts.Interval < 100*time.Millisecond || opts.RuntimeTop < 0 || opts.RuntimeTop > 100 || invalidPercent(opts.CPUThreshold) || invalidPercent(opts.MemoryThreshold) || opts.CPUThreshold < 0 || opts.MemoryThreshold < 0 || opts.MemoryThreshold > 100 {
 		return plugins.ErrInvalid
 	}
+	if opts.RuntimeSort != "" && opts.RuntimeSort != plugins.DockerRuntimeSortCPU && opts.RuntimeSort != plugins.DockerRuntimeSortMemory {
+		return plugins.ErrInvalid
+	}
 	peaks := map[string]*plugins.DockerRuntimeTrendItem{}
 	completed := 0
-	requested := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0
-	memory := map[string]*plugins.DockerMemoryDiagnostic{}
+	requested := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0 || opts.RuntimeSort != ""
+	memory := []memoryAccumulator{}
 	defer func() {
 		if requested && d.RuntimeTrend == nil {
 			d.RuntimeTrend = makeTrend(peaks, completed, opts)
+		}
+		if opts.MemoryDetails {
+			d.Memory = finishMemory(memory)
 		}
 	}()
 	for i := 0; i < n; i++ {
@@ -41,10 +48,14 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 		if err := p.runtime(ctx, d, o); err != nil {
 			return err
 		}
-		if !requested {
-			if opts.MemoryDetails {
-				recordMemory(memory, d.Runtime)
+		if opts.MemoryDetails {
+			recordMemory(&memory, d.Runtime)
+			if err := p.memoryInspect(ctx, memory); err != nil {
+				fail(o, issueInspectUnavailable)
+				return err
 			}
+		}
+		if !requested {
 			continue
 		}
 		type observation struct {
@@ -77,9 +88,9 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 			if mem > item.PeakMemoryPercent {
 				item.PeakMemoryPercent = mem
 			}
-		}
-		if opts.MemoryDetails {
-			recordMemory(memory, d.Runtime)
+			if bytes, _, ok := parseMemUsage(row.MemUsage); ok && bytes > item.PeakMemoryBytes {
+				item.PeakMemoryBytes = bytes
+			}
 		}
 		completed++
 		// A missing container in a sample is churn, not a zero reading.
@@ -88,58 +99,163 @@ func (p *Plugin) runtimeSamples(ctx context.Context, opts plugins.Options, d *pl
 		d.RuntimeTrend = makeTrend(peaks, completed, opts)
 	}
 	if opts.MemoryDetails {
-		d.Memory = finishMemory(memory, completed)
+		d.Memory = finishMemory(memory)
+	}
+	if opts.RuntimeSort == plugins.DockerRuntimeSortMemory {
+		sort.SliceStable(d.Runtime, func(i, j int) bool {
+			a, _, oka := parseMemUsage(d.Runtime[i].MemUsage)
+			b, _, okb := parseMemUsage(d.Runtime[j].MemUsage)
+			if oka != okb {
+				return oka
+			}
+			return a > b
+		})
 	}
 	return nil
 }
 
-func recordMemory(items map[string]*plugins.DockerMemoryDiagnostic, rows []plugins.DockerContainerStats) {
+type memoryAccumulator struct {
+	item plugins.DockerMemoryDiagnostic
+}
+
+const sustainedMemoryPressureThreshold = 80.0
+
+func recordMemory(items *[]memoryAccumulator, rows []plugins.DockerContainerStats) {
 	for _, row := range rows {
-		current, peak, ok := parseMemUsage(row.MemUsage)
-		item := items[row.ID]
-		if item == nil {
-			item = &plugins.DockerMemoryDiagnostic{ID: row.ID, Name: row.Name, Denominator: plugins.DockerMemoryDenominatorUnknown}
-			items[row.ID] = item
-		}
-		item.Name = row.Name
+		current, _, ok := parseMemUsage(row.MemUsage)
 		if !ok {
 			continue
 		}
-		if item.FirstBytes == nil {
-			v := current
-			item.FirstBytes = &v
+		idx := -1
+		for i := range *items {
+			if (*items)[i].item.ID == row.ID {
+				idx = i
+				break
+			}
 		}
-		if item.CurrentBytes == nil || current > *item.CurrentBytes {
+		if idx < 0 {
+			*items = append(*items, memoryAccumulator{item: plugins.DockerMemoryDiagnostic{ID: row.ID, Name: row.Name, Denominator: plugins.DockerMemoryDenominatorUnknown}})
+			idx = len(*items) - 1
+		}
+		a := &(*items)[idx]
+		a.item.Name = row.Name
+		if a.item.FirstBytes == nil {
 			v := current
-			item.PeakBytes = &v
+			a.item.FirstBytes = &v
 		}
 		v := current
-		item.CurrentBytes = &v
-		if item.PeakBytes == nil || peak > *item.PeakBytes {
-			v := peak
-			item.PeakBytes = &v
+		a.item.CurrentBytes = &v
+		if a.item.PeakBytes == nil || current > *a.item.PeakBytes {
+			x := current
+			a.item.PeakBytes = &x
 		}
-		item.SampleCount++
+		a.item.SampleCount++
+		pressure, err := percent(row.MemPerc)
+		if err == nil && !invalidPercent(pressure) && pressure >= sustainedMemoryPressureThreshold {
+			a.item.PressureSampleCount++
+		}
 	}
 }
 
-func finishMemory(items map[string]*plugins.DockerMemoryDiagnostic, _ int) []plugins.DockerMemoryDiagnostic {
+func finishMemory(items []memoryAccumulator) []plugins.DockerMemoryDiagnostic {
 	out := make([]plugins.DockerMemoryDiagnostic, 0, len(items))
-	for _, item := range items {
+	for _, a := range items {
+		item := a.item
 		if item.FirstBytes != nil && item.CurrentBytes != nil {
-			delta := int64(0)
-			if *item.CurrentBytes >= *item.FirstBytes {
-				delta = int64(*item.CurrentBytes - *item.FirstBytes)
-			} else {
-				delta = -int64(*item.FirstBytes - *item.CurrentBytes)
+			delta, ok := signedDelta(*item.CurrentBytes, *item.FirstBytes)
+			if !ok {
+				continue
 			}
 			item.ObservedGrowthBytes = &delta
 			item.RisingUsage = delta > 0
 		}
-		out = append(out, *item)
+		item.SustainedPressure = item.SampleCount > 1 && item.PressureSampleCount >= 2 && item.PressureSampleCount*2 >= item.SampleCount
+		out = append(out, item)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+func signedDelta(a, b uint64) (int64, bool) {
+	const max = uint64(1<<63 - 1)
+	if a >= b {
+		d := a - b
+		if d > max {
+			return 0, false
+		}
+		return int64(d), true
+	}
+	d := b - a
+	if d > max+1 {
+		return 0, false
+	}
+	if d == max+1 {
+		return -1 << 63, true
+	}
+	return -int64(d), true
+}
+
+func (p *Plugin) memoryInspect(ctx context.Context, samples []memoryAccumulator) error {
+	ids := make([]string, 0, len(samples))
+	for _, a := range samples {
+		if a.item.SampleCount > 0 {
+			ids = append(ids, a.item.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	b, err := p.call(ctx, "docker inspect", append([]string{"container", "inspect"}, ids...)...)
+	if err != nil {
+		return err
+	}
+	var rows []struct {
+		ID   string `json:"Id"`
+		Host *struct {
+			Memory *int64 `json:"Memory"`
+		} `json:"HostConfig"`
+		State *struct {
+			OOMKilled *bool `json:"OOMKilled"`
+		} `json:"State"`
+	}
+	if json.Unmarshal(b, &rows) != nil {
+		return ErrInvalidResponse
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		id := strings.TrimPrefix(r.ID, "sha256:")
+		if !validID(id) || seen[id] {
+			return ErrInvalidResponse
+		}
+		seen[id] = true
+		for i := range samples {
+			if samples[i].item.ID != id {
+				continue
+			}
+			a := &samples[i]
+			if r.Host != nil && r.Host.Memory != nil && *r.Host.Memory > 0 {
+				v := uint64(*r.Host.Memory)
+				a.item.LimitBytes = &v
+				a.item.Denominator = plugins.DockerMemoryDenominatorContainerLimit
+				if a.item.CurrentBytes != nil && *a.item.CurrentBytes <= v {
+					h := v - *a.item.CurrentBytes
+					a.item.HeadroomBytes = &h
+				}
+			} else if r.Host != nil && r.Host.Memory != nil && *r.Host.Memory == 0 {
+				a.item.Denominator = plugins.DockerMemoryDenominatorDaemonHost
+			} else {
+				a.item.Denominator = plugins.DockerMemoryDenominatorUnknown
+			}
+			if r.State != nil {
+				a.item.OOMKilled = r.State.OOMKilled
+			}
+			break
+		}
+	}
+	if len(seen) != len(ids) {
+		return ErrInvalidResponse
+	}
+	return nil
 }
 
 func parseMemUsage(s string) (uint64, uint64, bool) {
@@ -164,9 +280,13 @@ func parseBytes(s string) (uint64, bool) {
 			if e != nil || invalidPercent(n) || n < 0 {
 				return 0, false
 			}
-			factor := math.Pow(1024, float64(u.power))
+			base := 1024.0
+			if u.suffix == "kB" || u.suffix == "MB" || u.suffix == "GB" || u.suffix == "TB" {
+				base = 1000
+			}
+			factor := math.Pow(base, float64(u.power))
 			v := n * factor
-			if invalidPercent(v) || v > float64(^uint64(0)) {
+			if invalidPercent(v) || v >= math.Exp2(64) {
 				return 0, false
 			}
 			return uint64(v), true
@@ -183,8 +303,8 @@ func makeTrend(peaks map[string]*plugins.DockerRuntimeTrendItem, completed int, 
 		items = append(items, *p)
 	}
 	sort.Slice(items, func(i, j int) bool {
-		if opts.RuntimeSort == plugins.DockerRuntimeSortMemory && items[i].PeakMemoryPercent != items[j].PeakMemoryPercent {
-			return items[i].PeakMemoryPercent > items[j].PeakMemoryPercent
+		if opts.RuntimeSort == plugins.DockerRuntimeSortMemory && items[i].PeakMemoryBytes != items[j].PeakMemoryBytes {
+			return items[i].PeakMemoryBytes > items[j].PeakMemoryBytes
 		}
 		if items[i].PeakCPUPercent != items[j].PeakCPUPercent {
 			return items[i].PeakCPUPercent > items[j].PeakCPUPercent
