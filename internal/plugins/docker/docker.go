@@ -159,6 +159,11 @@ func classifyStderr(stderr string) error {
 }
 
 type Plugin struct{ runner Runner }
+type crashOptionsKey struct{}
+type crashOptions struct {
+	enabled bool
+	tail    int
+}
 
 type commandTimeoutError struct {
 	command string
@@ -178,7 +183,7 @@ func (p *Plugin) Describe() plugins.Descriptor {
 	return plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{
 		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, DiskDetails: true}},
 		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, RuntimeTrends: true}},
-		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true}},
+		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, CrashInvestigation: true}},
 	}}
 }
 
@@ -192,7 +197,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusCancelled}, err
 	}
 	trendOptions := req.Options.Samples != 0 || req.Options.Interval != 0 || req.Options.RuntimeTop != 0 || req.Options.CPUThreshold != 0 || req.Options.MemoryThreshold != 0
-	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions || req.Options.DiskDetails && req.Operation != plugins.OperationDisk {
+	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions || req.Options.DiskDetails && req.Operation != plugins.OperationDisk || req.Options.LogTail < 0 || req.Options.LogTail > 200 || (req.Options.CrashInvestigation || req.Options.LogTail != 0) && req.Operation != plugins.OperationConfig {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	if validateTargetOptions(req.Options) != nil {
@@ -215,6 +220,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	ctx = context.WithValue(ctx, requestRunnerKey{}, scopedRunner{base: p.runner, context: req.Options.Context})
 	ctx = context.WithValue(ctx, selectorKey{}, append([]string(nil), req.Options.Containers...))
 	ctx = context.WithValue(ctx, projectKey{}, req.Options.Project)
+	ctx = context.WithValue(ctx, crashOptionsKey{}, crashOptions{enabled: req.Options.CrashInvestigation, tail: req.Options.LogTail})
 	var err error
 	switch req.Operation {
 	case plugins.OperationDisk:
@@ -496,6 +502,7 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				cfg.Health = c.State.Health.Status
 			}
 			if c.HostConfig != nil {
+				_ = c.HostConfig.RestartPolicy.Name
 				cfg.MemoryLimit = c.HostConfig.Memory
 				cfg.NanoCPUs = c.HostConfig.NanoCPUs
 				cfg.PIDsLimit = c.HostConfig.PidsLimit
@@ -509,10 +516,11 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				fail(o, issueHostConfigUnknown)
 			}
 			d.Config = append(d.Config, cfg)
+			addCrashDiagnostic(ctx, p, d, c, cfg)
 			if cfg.Project != "" {
 				group := composeGroup(d, cfg.Project)
 				group.Total++
-				if cfg.Health == stateUnhealthy {
+				if cfg.Health == stateUnhealthy && cfg.Status != "exited" && cfg.Status != "dead" {
 					group.Unhealthy++
 				}
 				if cfg.Status == stateRestarting {
@@ -525,7 +533,7 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 			if cfg.MemoryLimit != nil && *cfg.MemoryLimit == 0 {
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnlimitedMemory, Severity: plugins.SeverityInfo, Summary: fmt.Sprintf("Container %s (%s) has no memory limit", cfg.Name, id)})
 			}
-			if cfg.Health == stateUnhealthy || cfg.Status == stateRestarting {
+			if cfg.Health == stateUnhealthy && cfg.Status == "running" || cfg.Status == stateRestarting {
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnhealthy, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) is unhealthy or restarting", cfg.Name, id), Recommendation: "Inspect the health check and recent logs; verify the service before restarting."})
 			}
 			if cfg.OOMKilled != nil && *cfg.OOMKilled {
@@ -571,18 +579,30 @@ type inspectConfig struct {
 	Labels map[string]string `json:"Labels"`
 }
 type inspectState struct {
-	Status    string         `json:"Status"`
-	Health    *inspectHealth `json:"Health"`
-	OOMKilled *bool          `json:"OOMKilled"`
-	ExitCode  *int64         `json:"ExitCode"`
+	Status     string         `json:"Status"`
+	StartedAt  time.Time      `json:"StartedAt"`
+	FinishedAt time.Time      `json:"FinishedAt"`
+	Health     *inspectHealth `json:"Health"`
+	OOMKilled  *bool          `json:"OOMKilled"`
+	ExitCode   *int64         `json:"ExitCode"`
 }
 type inspectHealth struct {
-	Status string `json:"Status"`
+	Status string             `json:"Status"`
+	Log    []inspectHealthLog `json:"Log"`
+}
+type inspectHealthLog struct {
+	Start    time.Time `json:"Start"`
+	End      time.Time `json:"End"`
+	ExitCode int64     `json:"ExitCode"`
+	Output   string    `json:"Output"`
 }
 type inspectLogConfig struct {
 	Type string `json:"Type"`
 }
 type inspectHostConfig struct {
+	RestartPolicy struct {
+		Name string `json:"Name"`
+	} `json:"RestartPolicy"`
 	Memory         *int64           `json:"Memory"`
 	NanoCPUs       *int64           `json:"NanoCpus"`
 	PidsLimit      *int64           `json:"PidsLimit"`
