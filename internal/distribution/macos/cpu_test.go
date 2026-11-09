@@ -3,6 +3,7 @@ package macos
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,21 @@ func TestParseCPUUsageRejectsBadTotalsAndNonfinite(t *testing.T) {
 	for _, s := range []string{"CPU usage: 10% user, 5% sys, 85% idle\nCPU usage: 20% user, 10% sys, 60% idle", "CPU usage: 10% user, 5% sys, 85% idle\nCPU usage: NaN% user, 10% sys, 70% idle"} {
 		if _, err := ParseCPUUsage(s); err == nil {
 			t.Fatalf("accepted %q", s)
+		}
+	}
+}
+
+func TestParseCPUUsageAllowsTopUnpaddedHundredths(t *testing.T) {
+	// Apple's top prints fractional integers without zero-padding. Tick counts
+	// 108, 209, 9683 out of 10000 display as 1.8, 2.9, 96.83 (total 101.53).
+	got, err := ParseCPUUsage("CPU usage: 10% user, 5% sys, 85% idle\nCPU usage: 1.8% user, 2.9% sys, 96.83% idle")
+	if err != nil || math.Abs(got.BusyPercent-4.7) > 0.0001 {
+		t.Fatalf("got %#v, %v", got, err)
+	}
+	for _, total := range []string{"20% user, 11% sys, 72% idle", "20% user, 11% sys, 66% idle"} {
+		input := "CPU usage: 10% user, 5% sys, 85% idle\nCPU usage: " + total
+		if _, err := ParseCPUUsage(input); err == nil {
+			t.Fatalf("accepted inconsistent total: %q", input)
 		}
 	}
 }

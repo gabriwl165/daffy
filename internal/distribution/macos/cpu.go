@@ -17,6 +17,10 @@ const (
 	CPUUserField     = "user"
 	CPUSystemField   = "sys"
 	CPUIdleField     = "idle"
+	// Apple's top truncates hundredths but prints them without zero-padding:
+	// 1.08% can appear as 1.8%. Allow this display error across CPU categories.
+	// https://github.com/apple-oss-distributions/top/blob/main/globalstats.c
+	cpuUsageTotalTolerance = 2.0
 )
 
 type CPUUsage struct {
@@ -133,7 +137,7 @@ func ParseCPUUsage(output string) (CPUUsage, error) {
 			return CPUUsage{}, fmt.Errorf("unknown CPU usage field")
 		}
 	}
-	if !seenUser || !seenSystem || !seenIdle || math.Abs(user+system+idle-100) > 1.0 {
+	if !seenUser || !seenSystem || !seenIdle || math.Abs(user+system+idle-100) > cpuUsageTotalTolerance {
 		return CPUUsage{}, fmt.Errorf("inconsistent CPU usage totals")
 	}
 	return CPUUsage{UserPercent: user, SystemPercent: system, IdlePercent: idle, BusyPercent: user + system}, nil
