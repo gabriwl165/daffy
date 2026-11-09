@@ -37,6 +37,19 @@ renames, and mount changes can affect results.
 
 ## Interpreting space
 
+The diagnostic analyzer flags filesystem-wide available capacity and inode counts
+at or below 10% as warnings, and at or below 5% as critical. Unknown totals and
+invalid free counts are not interpreted as exhaustion. These are investigation
+thresholds, not predictions of when a filesystem will fill. A scoped directory
+scan still reports capacity for its containing filesystem; the two scopes must
+not be compared as though they measure the same thing.
+
+Incomplete traversal is a warning. Intentional mount-policy skips and configured
+exclusions are informational and do not by themselves mean traversal failed.
+Diagnostics are derived from the existing report without another filesystem walk
+or external commands: O(M + I) time and O(M + I) worst-case result space, for M
+reported mounts and I retained issues. The JSON report contract is unchanged.
+
 - **Apparent bytes** describe logical file lengths.
 - **Allocated bytes** describe blocks attributed to filesystem entries.
 - Hard-linked files are charged once per scan; the directory receiving the
