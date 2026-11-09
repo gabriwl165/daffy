@@ -16,6 +16,18 @@ type Config struct {
 	TopN       int
 	TimeBudget time.Duration
 	BatchSize  int
+	// OnProgress is called synchronously at most every 250ms, and at scan start/end.
+	// Callbacks should be cheap and nonblocking.
+	OnProgress func(Progress)
+}
+
+// Progress is a snapshot of scanner coverage at a point in time.
+type Progress struct {
+	Elapsed        time.Duration
+	Files          int64
+	Directories    int64
+	SkippedEntries int64
+	CurrentPath    string
 }
 
 type FileEntry struct {
