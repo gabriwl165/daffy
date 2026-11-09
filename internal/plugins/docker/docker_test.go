@@ -82,6 +82,24 @@ func TestTargetSelectionContextAndNoUnqualifiedStats(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeProjectGroupingAndFiltering(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	inspect := `[{"Id":"` + id + `","Name":"/api","State":{"Status":"restarting","Health":{"Status":"unhealthy"}},"Config":{"Labels":{"com.docker.compose.project":"shop","com.docker.compose.service":"api","untrusted":"must-not-leak"}},"HostConfig":{"Memory":1,"Privileged":false}}]`
+	r := &fakeRunner{outputs: [][]byte{[]byte(`{"ID":"` + id + `","Names":"api"}`), []byte(inspect)}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig, Options: plugins.Options{Project: "shop"}})
+	if err != nil || len(o.Details.Docker.Config) != 1 {
+		t.Fatalf("project result: %#v %v", o, err)
+	}
+	d := o.Details.Docker
+	if d.Config[0].Project != "shop" || d.Config[0].Service != "api" || len(d.ComposeGroups) != 1 || d.ComposeGroups[0].Total != 1 || d.ComposeGroups[0].Unhealthy != 1 || d.ComposeGroups[0].Restarting != 1 {
+		t.Fatalf("group metadata: %#v", d)
+	}
+	b, _ := json.Marshal(o)
+	if strings.Contains(string(b), "must-not-leak") {
+		t.Fatal("raw labels leaked")
+	}
+}
 func containsArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {

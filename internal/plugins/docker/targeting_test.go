@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -121,5 +122,39 @@ func TestMalformedContainerListIsPartial(t *testing.T) {
 	o, err := New(&fakeRunner{outputs: [][]byte{[]byte("not-json")}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
 	if err == nil || o.Status != plugins.StatusPartial || len(o.Issues) == 0 {
 		t.Fatalf("malformed listing reported healthy: %#v err=%v", o, err)
+	}
+}
+
+func TestProjectZeroMatchesSkipsStatsAndPropagatesConfigIssues(t *testing.T) {
+	inspect := `[{"Id":"` + targetID + `","Name":"/api","State":{"Status":"exited"},"HostConfig":{"Memory":1,"Privileged":false},"Config":{"Labels":{"com.docker.compose.project":"shop"}}}]`
+	r := &fakeRunner{outputs: [][]byte{targetListing(targetID), targetListing(targetID), []byte(inspect)}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Project: "missing"}})
+	if err != nil || r.calls != 3 || len(o.Details.Docker.Runtime) != 0 {
+		t.Fatalf("zero-project result: calls=%d outcome=%#v err=%v", r.calls, o, err)
+	}
+	for _, args := range r.args {
+		if len(args) > 0 && args[0] == "stats" {
+			t.Fatal("stats ran for empty project selection")
+		}
+	}
+
+	badInspect := `[{"Id":"` + targetID + `","Name":"/api","State":{"Status":"running"},"Config":{"Labels":{"com.docker.compose.project":"shop"}}}]`
+	r = &fakeRunner{outputs: [][]byte{targetListing(targetID), targetListing(targetID), []byte(badInspect)}}
+	o, err = New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Project: "shop"}})
+	if err == nil || o.Status != plugins.StatusPartial || len(o.Issues) == 0 || o.Issues[0].Code != issueHostConfigUnknown {
+		t.Fatalf("project config evidence dropped: %#v err=%v", o, err)
+	}
+}
+
+func TestStandaloneContainerAndUntrustedLabelsRemainPrivate(t *testing.T) {
+	inspect := `[{"Id":"` + targetID + `","Name":"/solo","State":{"Status":"running"},"HostConfig":{"Memory":1,"Privileged":false},"Config":{"Labels":{"untrusted":"private-label"}}}]`
+	r := &fakeRunner{outputs: [][]byte{targetListing(targetID), []byte(inspect)}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationConfig})
+	if err != nil || len(o.Details.Docker.Config) != 1 || len(o.Details.Docker.ComposeGroups) != 0 {
+		t.Fatalf("standalone container lost: %#v %v", o, err)
+	}
+	b, _ := json.Marshal(o)
+	if strings.Contains(string(b), "untrusted") || strings.Contains(string(b), "private-label") {
+		t.Fatalf("raw label leaked: %s", b)
 	}
 }

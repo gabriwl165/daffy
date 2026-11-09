@@ -26,6 +26,7 @@ const (
 	pluginFlagExclude    = "exclude"
 	pluginFlagContext    = "context"
 	pluginFlagContainer  = "container"
+	pluginFlagProject    = "project"
 	pluginDefaultTimeout = 15 * time.Second
 	pluginDefaultTop     = 20
 	pluginMaximumTop     = 10000
@@ -129,6 +130,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 	var containers stringsFlag
 	fs.Var(&containers, pluginFlagContainer, "select container name or ID (repeatable)")
 	contextName := fs.String(pluginFlagContext, "", "Docker CLI context")
+	projectName := fs.String(pluginFlagProject, "", "Compose project")
 	fs.Usage = func() { fmt.Fprint(&diagnostics, pluginUsage) }
 	if e := fs.Parse(args); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
@@ -146,7 +148,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		fmt.Fprintf(errOut, "unexpected arguments: %s\n", safe(strings.Join(fs.Args(), " ")))
 		return int(exitUsage)
 	}
-	var specified struct{ Path, Top, Exclude, Context, Container bool }
+	var specified struct{ Path, Top, Exclude, Context, Container, Project bool }
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case pluginFlagPath:
@@ -159,6 +161,8 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 			specified.Context = true
 		case pluginFlagContainer:
 			specified.Container = true
+		case pluginFlagProject:
+			specified.Project = true
 		}
 	})
 	if *timeout <= 0 {
@@ -196,7 +200,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		return int(exitUsage)
 	}
 	for _, op := range selected {
-		if specified.Path && !op.Options.Path || specified.Exclude && !op.Options.Excludes || specified.Top && !op.Options.TopN || specified.Context && id != plugins.PluginDocker || specified.Container && (id != plugins.PluginDocker || op.ID == plugins.OperationDisk) || op.Options.RequirePath && *path == "" {
+		if specified.Path && !op.Options.Path || specified.Exclude && !op.Options.Excludes || specified.Top && !op.Options.TopN || specified.Context && id != plugins.PluginDocker || specified.Container && (id != plugins.PluginDocker || op.ID == plugins.OperationDisk) || specified.Project && (id != plugins.PluginDocker || op.ID == plugins.OperationDisk) || op.Options.RequirePath && *path == "" {
 			fmt.Fprintf(errOut, "invalid or unsupported options for %q\n", safe(string(op.ID)))
 			return int(exitUsage)
 		}
@@ -212,7 +216,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 			}
 		}
 		return 0
-	}(), Context: *contextName, Containers: containers}}, *timeout)
+	}(), Context: *contextName, Containers: containers, Project: *projectName}}, *timeout)
 	if err != nil && (errors.Is(err, plugins.ErrInvalid) || errors.Is(err, plugins.ErrUnknownPlugin) || errors.Is(err, plugins.ErrUnknownOperation)) {
 		if _, werr := fmt.Fprintf(errOut, "%s\n", safe(err.Error())); werr != nil {
 			return int(exitFailure)
@@ -289,7 +293,12 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 				}
 			}
 			for _, v := range d.Config {
-				if _, e := fmt.Fprintf(w, "  %s %s status=%s health=%s memory=%s nano_cpus=%s pids=%s privileged=%s readonly_rootfs=%s log_driver=%s restarts=%d\n", safe(v.ID), safe(v.Name), safe(v.Status), safe(v.Health), int64Text(v.MemoryLimit), int64Text(v.NanoCPUs), int64Text(v.PIDsLimit), boolText(v.Privileged), boolText(v.ReadonlyRootfs), safe(v.LogDriver), v.RestartCount); e != nil {
+				if _, e := fmt.Fprintf(w, "  %s %s status=%s health=%s project=%s service=%s memory=%s nano_cpus=%s pids=%s privileged=%s readonly_rootfs=%s log_driver=%s restarts=%d\n", safe(v.ID), safe(v.Name), safe(v.Status), safe(v.Health), safe(v.Project), safe(v.Service), int64Text(v.MemoryLimit), int64Text(v.NanoCPUs), int64Text(v.PIDsLimit), boolText(v.Privileged), boolText(v.ReadonlyRootfs), safe(v.LogDriver), v.RestartCount); e != nil {
+					return e
+				}
+			}
+			for _, g := range d.ComposeGroups {
+				if _, e := fmt.Fprintf(w, "  Compose project %s: %d total, %d unhealthy, %d restarting\n", safe(g.Project), g.Total, g.Unhealthy, g.Restarting); e != nil {
 					return e
 				}
 			}

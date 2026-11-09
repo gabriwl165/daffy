@@ -177,8 +177,8 @@ func New(r Runner) *Plugin {
 func (p *Plugin) Describe() plugins.Descriptor {
 	return plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{
 		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true}},
-		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true}},
-		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true}},
+		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true}},
+		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true}},
 	}}
 }
 
@@ -194,13 +194,16 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
-	if validateTargetOptions(req.Options) != nil || req.Options.Project != "" {
+	if validateTargetOptions(req.Options) != nil {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	if req.Operation != plugins.OperationDisk && req.Operation != plugins.OperationRuntime && req.Operation != plugins.OperationConfig {
 		return plugins.Outcome{}, plugins.ErrUnknownOperation
 	}
 	if len(req.Options.Containers) > 0 && req.Operation == plugins.OperationDisk {
+		return plugins.Outcome{}, plugins.ErrInvalid
+	}
+	if req.Options.Project != "" && req.Operation == plugins.OperationDisk {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	d := &plugins.DockerDetails{Context: "CLI-selected Docker daemon; snapshot is non-atomic"}
@@ -210,6 +213,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	o.Details.Docker = d
 	ctx = context.WithValue(ctx, requestRunnerKey{}, scopedRunner{base: p.runner, context: req.Options.Context})
 	ctx = context.WithValue(ctx, selectorKey{}, append([]string(nil), req.Options.Containers...))
+	ctx = context.WithValue(ctx, projectKey{}, req.Options.Project)
 	var err error
 	switch req.Operation {
 	case plugins.OperationDisk:
@@ -330,7 +334,8 @@ type diskRow struct {
 }
 
 func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {
-	if len(targetSelectors(ctx)) == 0 {
+	selectors, project := targetSelectors(ctx), targetProject(ctx)
+	if len(selectors) == 0 && project == "" {
 		b, e := p.call(ctx, "docker stats", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}")
 		if e != nil {
 			failCommand(o, issueRuntimeUnavailable, e)
@@ -343,10 +348,26 @@ func (p *Plugin) runtime(ctx context.Context, d *plugins.DockerDetails, o *plugi
 		}
 		return appendRuntimeRows(d, o, rows)
 	}
-	ids, e := p.selectContainers(ctx, targetSelectors(ctx))
+	ids, e := p.selectContainers(ctx, selectors)
 	if e != nil {
 		failCommand(o, issueListUnavailable, e)
 		return e
+	}
+	if project != "" {
+		tmp := &plugins.DockerDetails{}
+		oo := &plugins.Outcome{Status: plugins.StatusComplete}
+		if err := p.config(ctx, tmp, oo); err != nil {
+			o.Issues = append(o.Issues, oo.Issues...)
+			o.Findings = append(o.Findings, oo.Findings...)
+			if oo.Status != plugins.StatusComplete {
+				o.Status = oo.Status
+			}
+			return err
+		}
+		ids = ids[:0]
+		for _, c := range tmp.Config {
+			ids = append(ids, c.ID)
+		}
 	}
 	running := []string{}
 	if len(ids) > 0 {
@@ -462,6 +483,11 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				continue
 			}
 			cfg := plugins.DockerContainerConfig{ID: id, Name: strings.TrimPrefix(c.Name, "/"), Status: c.State.Status, RestartCount: c.RestartCount, Health: "", OOMKilled: c.State.OOMKilled, ExitCode: c.State.ExitCode}
+			cfg.Project = c.Config.Labels["com.docker.compose.project"]
+			cfg.Service = c.Config.Labels["com.docker.compose.service"]
+			if reqProject := targetProject(ctx); reqProject != "" && cfg.Project != reqProject {
+				continue
+			}
 			if c.State.Health != nil {
 				cfg.Health = c.State.Health.Status
 			}
@@ -479,6 +505,16 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				fail(o, issueHostConfigUnknown)
 			}
 			d.Config = append(d.Config, cfg)
+			if cfg.Project != "" {
+				group := composeGroup(d, cfg.Project)
+				group.Total++
+				if cfg.Health == stateUnhealthy {
+					group.Unhealthy++
+				}
+				if cfg.Status == stateRestarting {
+					group.Restarting++
+				}
+			}
 			if cfg.Privileged != nil && *cfg.Privileged {
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingPrivileged, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) runs in privileged mode", cfg.Name, id)})
 			}
@@ -525,6 +561,10 @@ type inspectContainer struct {
 	RestartCount int64              `json:"RestartCount"`
 	State        *inspectState      `json:"State"`
 	HostConfig   *inspectHostConfig `json:"HostConfig"`
+	Config       inspectConfig      `json:"Config"`
+}
+type inspectConfig struct {
+	Labels map[string]string `json:"Labels"`
 }
 type inspectState struct {
 	Status    string         `json:"Status"`

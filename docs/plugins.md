@@ -71,6 +71,20 @@ running matches. An empty running selection never falls back to all containers.
 The context name is reported without exposing its daemon endpoint; without
 `--context`, Docker's normal CLI/environment selection remains authoritative.
 
+Compose projects can be selected by their Docker label, without invoking Compose
+or reading a project file:
+
+```sh
+daffy docker config --project shop
+daffy docker runtime --project shop --json
+```
+
+Configuration reports expose only the Compose project/service labels and include
+project totals, unhealthy counts, and restarting counts. Standalone containers
+remain visible in unfiltered configuration reports. Project and container
+selectors intersect when combined; project selection also requires an explicit
+`config` or `runtime` operation. Names and allowlisted label values may be sensitive.
+
 ### Bazel
 
 Supply a local Bazel output/cache directory with `--path`. Daffy reports observed
