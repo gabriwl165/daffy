@@ -9,42 +9,47 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gabriwl165/daffy/internal/plugins"
 )
 
 const (
-	pluginCommand             = "plugins"
-	pluginListCommand         = "list"
-	pluginRunCommand          = "run"
-	pluginFlagJSON            = "json"
-	pluginFlagTimeout         = "timeout"
-	pluginFlagPath            = "path"
-	pluginFlagTop             = "top"
-	pluginFlagExclude         = "exclude"
-	pluginFlagContext         = "context"
-	pluginFlagContainer       = "container"
-	pluginFlagProject         = "project"
-	pluginFlagSamples         = "samples"
-	pluginFlagInterval        = "interval"
-	pluginFlagRuntimeTop      = "runtime-top"
-	pluginFlagCPUThreshold    = "cpu-threshold"
-	pluginFlagMemoryThreshold = "memory-threshold"
-	pluginFlagDetails         = "details"
-	pluginDefaultTimeout      = 15 * time.Second
-	pluginDefaultTop          = 20
-	pluginMaximumTop          = 10000
+	pluginCommand                = "plugins"
+	pluginListCommand            = "list"
+	pluginRunCommand             = "run"
+	pluginFlagJSON               = "json"
+	pluginFlagTimeout            = "timeout"
+	pluginFlagPath               = "path"
+	pluginFlagTop                = "top"
+	pluginFlagExclude            = "exclude"
+	pluginFlagContext            = "context"
+	pluginFlagContainer          = "container"
+	pluginFlagProject            = "project"
+	pluginFlagSamples            = "samples"
+	pluginFlagInterval           = "interval"
+	pluginFlagRuntimeTop         = "runtime-top"
+	pluginFlagCPUThreshold       = "cpu-threshold"
+	pluginFlagMemoryThreshold    = "memory-threshold"
+	pluginFlagDetails            = "details"
+	pluginFlagVerbose            = "verbose"
+	pluginDefaultTimeout         = 15 * time.Second
+	pluginDefaultTop             = 20
+	pluginMaximumTop             = 10000
+	dockerSummaryRuntimeLimit    = 5
+	dockerFindingUnlimitedMemory = "docker_memory_unlimited"
 )
 
 const pluginUsage = `Usage: daffy plugins list [--json]
-       daffy plugins run docker [disk|runtime|config] [--details] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
+        daffy plugins run docker [disk|runtime|config] [--details] [--verbose] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
        daffy plugins run bazel [disk] --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
 
-const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--details] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
+const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--details] [--verbose] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
 `
 const bazelAliasUsage = `Usage: daffy bazel disk --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
@@ -129,6 +134,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 	var diagnostics bytes.Buffer
 	fs.SetOutput(&diagnostics)
 	asJSON := fs.Bool(pluginFlagJSON, false, "emit JSON")
+	verbose := fs.Bool(pluginFlagVerbose, false, "show full text details")
 	timeout := fs.Duration(pluginFlagTimeout, pluginDefaultTimeout, "per-operation timeout (bundle operations run sequentially)")
 	path := fs.String(pluginFlagPath, "", "explicit output or cache directory")
 	top := fs.Int(pluginFlagTop, pluginDefaultTop, "top entries")
@@ -267,7 +273,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		if e := json.NewEncoder(out).Encode(report); e != nil {
 			return failed(errOut, e)
 		}
-	} else if e := printPluginReport(out, report); e != nil {
+	} else if e := printPluginReport(out, report, *verbose); e != nil {
 		return failed(errOut, e)
 	}
 	if err != nil {
@@ -293,7 +299,10 @@ type stringsFlag []string
 func (s *stringsFlag) String() string     { return strings.Join(*s, ",") }
 func (s *stringsFlag) Set(v string) error { *s = append(*s, v); return nil }
 
-func printPluginReport(w io.Writer, r plugins.Report) error {
+func printPluginReport(w io.Writer, r plugins.Report, verbose bool) error {
+	if r.Plugin == plugins.PluginDocker && !verbose {
+		return printDockerSummary(w, r)
+	}
 	if _, e := fmt.Fprintf(w, "%s · %s\n", safe(string(r.Plugin)), safe(string(r.Status))); e != nil {
 		return e
 	}
@@ -381,6 +390,247 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 		}
 	}
 	return nil
+}
+
+func printDockerSummary(w io.Writer, r plugins.Report) error {
+	if _, err := fmt.Fprintf(w, "Docker · %s\n", safe(string(r.Status))); err != nil {
+		return err
+	}
+	contextName := ""
+	for _, outcome := range r.Outcomes {
+		if d := outcome.Details.Docker; d != nil && d.Context != "" {
+			contextName = d.Context
+			break
+		}
+	}
+	if contextName != "" {
+		if _, err := fmt.Fprintf(w, "Context: %s\n", safe(contextName)); err != nil {
+			return err
+		}
+	}
+	var dockerIDs []string
+	for _, outcome := range r.Outcomes {
+		if d := outcome.Details.Docker; d != nil {
+			for _, c := range d.Config {
+				dockerIDs = append(dockerIDs, c.ID)
+			}
+			for _, c := range d.Runtime {
+				dockerIDs = append(dockerIDs, c.ID)
+			}
+			if d.RuntimeTrend != nil {
+				for _, c := range d.RuntimeTrend.Containers {
+					dockerIDs = append(dockerIDs, c.ID)
+				}
+			}
+		}
+	}
+	// Actionable warnings lead; repeated missing-memory-limit notes become one notice.
+	type missingMemoryNotice struct {
+		count          int
+		recommendation string
+	}
+	missingMemory := missingMemoryNotice{}
+	for _, outcome := range r.Outcomes {
+		for _, finding := range outcome.Findings {
+			if finding.Code == dockerFindingUnlimitedMemory {
+				missingMemory.count++
+				if finding.Recommendation != "" {
+					missingMemory.recommendation = finding.Recommendation
+				}
+				continue
+			}
+			if finding.Severity != plugins.SeverityWarning {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "[warning] %s\n", safe(shortenKnownIDs(finding.Summary, dockerIDs))); err != nil {
+				return err
+			}
+			if finding.Recommendation != "" {
+				if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(shortenKnownIDs(finding.Recommendation, dockerIDs))); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, outcome := range r.Outcomes {
+		for _, finding := range outcome.Findings {
+			if finding.Severity == plugins.SeverityInfo && finding.Code != dockerFindingUnlimitedMemory {
+				if _, err := fmt.Fprintf(w, "[info] %s\n", safe(shortenKnownIDs(finding.Summary, dockerIDs))); err != nil {
+					return err
+				}
+				if finding.Recommendation != "" {
+					if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(shortenKnownIDs(finding.Recommendation, dockerIDs))); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	if missingMemory.count > 0 {
+		if _, err := fmt.Fprintf(w, "[info] %d containers have no memory limit\n", missingMemory.count); err != nil {
+			return err
+		}
+		if missingMemory.recommendation != "" {
+			if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(missingMemory.recommendation)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, outcome := range r.Outcomes {
+		d := outcome.Details.Docker
+		if d == nil {
+			continue
+		}
+		runtimeRows := append([]plugins.DockerContainerStats(nil), d.Runtime...)
+		sort.SliceStable(runtimeRows, func(i, j int) bool {
+			cpuI, cpuJ := parsePercent(runtimeRows[i].CPUPerc), parsePercent(runtimeRows[j].CPUPerc)
+			if cpuI != cpuJ {
+				return cpuI > cpuJ
+			}
+			return parseDockerBytes(runtimeRows[i].MemUsage) > parseDockerBytes(runtimeRows[j].MemUsage)
+		})
+		for index, row := range runtimeRows {
+			if index >= dockerSummaryRuntimeLimit {
+				if _, err := fmt.Fprintf(w, "%d more containers hidden; use --verbose to show all.\n", len(d.Runtime)-index); err != nil {
+					return err
+				}
+				break
+			}
+			if _, err := fmt.Fprintf(w, "Container %s · %s · CPU %s · memory %s (%s)\n", safe(shortContainerID(row.ID)), safe(row.Name), safe(row.CPUPerc), safe(row.MemUsage), safe(row.MemPerc)); err != nil {
+				return err
+			}
+		}
+		if d.RuntimeTrend != nil {
+			trends := append([]plugins.DockerRuntimeTrendItem(nil), d.RuntimeTrend.Containers...)
+			sort.SliceStable(trends, func(i, j int) bool { return trends[i].PeakCPUPercent > trends[j].PeakCPUPercent })
+			for index, row := range trends {
+				if index >= dockerSummaryRuntimeLimit {
+					if _, err := fmt.Fprintf(w, "%d more runtime peaks hidden; use --verbose to show all.\n", len(d.RuntimeTrend.Containers)-index); err != nil {
+						return err
+					}
+					break
+				}
+				if _, err := fmt.Fprintf(w, "Peak %s · CPU %.1f%% · memory %.1f%%\n", safe(shortContainerID(row.ID)), row.PeakCPUPercent, row.PeakMemoryPercent); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, outcome := range r.Outcomes {
+		d := outcome.Details.Docker
+		if d == nil {
+			continue
+		}
+		for _, row := range d.DiskUsage {
+			if _, err := fmt.Fprintf(w, "Storage · %s: %s total, %s reclaimable (%d active / %d)\n", safe(row.Category), safe(row.Size), safe(row.Reclaimable), row.Active, row.TotalCount); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		return err
+	}
+	gapWritten := false
+	for _, outcome := range r.Outcomes {
+		if outcome.Status == plugins.StatusPartial || outcome.Status == plugins.StatusUnavailable || outcome.Status == plugins.StatusCancelled {
+			if !gapWritten {
+				if _, err := fmt.Fprintln(w, "Collection gaps:"); err != nil {
+					return err
+				}
+				gapWritten = true
+			}
+			if _, err := fmt.Fprintf(w, "  %s: %s\n", safe(string(outcome.Operation)), safe(string(outcome.Status))); err != nil {
+				return err
+			}
+		}
+		for _, issue := range outcome.Issues {
+			if !gapWritten {
+				if _, err := fmt.Fprintln(w, "Collection gaps:"); err != nil {
+					return err
+				}
+				gapWritten = true
+			}
+			if _, err := fmt.Fprintf(w, "  %s: %s\n", safe(string(outcome.Operation)), safe(issue.Summary)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func parsePercent(value string) float64 {
+	value = strings.TrimSpace(strings.TrimSuffix(value, "%"))
+	n, _ := strconv.ParseFloat(value, 64)
+	return n
+}
+
+func parseDockerBytes(usage string) float64 {
+	value := strings.TrimSpace(strings.SplitN(usage, "/", 2)[0])
+	if value == "" {
+		return 0
+	}
+	index := 0
+	for index < len(value) && (value[index] >= '0' && value[index] <= '9' || value[index] == '.' || value[index] == '-') {
+		index++
+	}
+	n, err := strconv.ParseFloat(value[:index], 64)
+	if err != nil {
+		return 0
+	}
+	unit := strings.ToUpper(strings.TrimSuffix(value[index:], "B"))
+	switch unit {
+	case "K":
+		return n * 1e3
+	case "M":
+		return n * 1e6
+	case "G":
+		return n * 1e9
+	case "T":
+		return n * 1e12
+	case "KI":
+		return n * (1 << 10)
+	case "MI":
+		return n * (1 << 20)
+	case "GI":
+		return n * (1 << 30)
+	case "TI":
+		return n * (1 << 40)
+	default:
+		return n
+	}
+}
+
+func shortenKnownIDs(text string, ids []string) string {
+	for _, id := range ids {
+		if len(id) <= 12 {
+			continue
+		}
+		start := 0
+		for {
+			i := strings.Index(text[start:], id)
+			if i < 0 {
+				break
+			}
+			i += start
+			end := i + len(id)
+			leftOK := i == 0 || (!unicode.IsLetter(rune(text[i-1])) && !unicode.IsDigit(rune(text[i-1])) && text[i-1] != '-' && text[i-1] != '_')
+			rightOK := end == len(text) || (!unicode.IsLetter(rune(text[end])) && !unicode.IsDigit(rune(text[end])) && text[end] != '-' && text[end] != '_')
+			if leftOK && rightOK {
+				text = text[:i] + id[:12] + text[end:]
+				start = i + 12
+			} else {
+				start = end
+			}
+		}
+	}
+	return text
+}
+
+func shortContainerID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 func int64Text(v *int64) string {
