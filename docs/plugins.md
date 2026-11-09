@@ -117,6 +117,18 @@ Timeout/cancellation preserves collected peaks and the completed sample count.
 Runtime-only flags require an explicit `runtime` operation and work with context,
 container, and project selection. Without them, collection stays a single snapshot.
 
+The runtime API also supports `memory_details` and `runtime_sort` (`cpu` or
+`memory`). Memory sorting uses observed absolute bytes, not percentages. Opt-in
+memory details correlate current/first/peak usage, observed growth, configured
+limit and headroom, recorded OOM state, and an inferred percentage denominator.
+Allowlisted inspection is batched and honors container/project/context selection.
+Missing configuration stays unknown; collected stats survive inspection failure
+or cancellation. Pressure counts use the requested memory threshold, or 80% when
+unspecified; sustained pressure means at least two high observations and at least
+half the valid percentage samples. This is a sampling heuristic, not a diagnosis.
+Growth does not prove a leak, and Docker memory statistics are not heap profiles.
+CLI flags are introduced in the later CLI PR.
+
 Disk drill-down is also opt-in:
 
 ```sh
