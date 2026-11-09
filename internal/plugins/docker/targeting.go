@@ -15,6 +15,7 @@ var safeSelector = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 type requestRunnerKey struct{}
 type selectorKey struct{}
 type projectKey struct{}
+type contextKey struct{}
 type scopedRunner struct {
 	base    Runner
 	context string
@@ -50,6 +51,7 @@ func targetSelectors(ctx context.Context) []string {
 	return v
 }
 func targetProject(ctx context.Context) string { v, _ := ctx.Value(projectKey{}).(string); return v }
+func targetContext(ctx context.Context) string { v, _ := ctx.Value(contextKey{}).(string); return v }
 func composeGroup(d *plugins.DockerDetails, project string) *plugins.DockerComposeGroup {
 	for i := range d.ComposeGroups {
 		if d.ComposeGroups[i].Project == project {

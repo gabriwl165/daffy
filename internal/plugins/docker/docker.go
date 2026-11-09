@@ -195,7 +195,7 @@ func New(r Runner) *Plugin {
 }
 func (p *Plugin) Describe() plugins.Descriptor {
 	return plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{
-		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, DiskDetails: true}},
+		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, DiskDetails: true, StorageAnalysis: true}},
 		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, RuntimeTrends: true, MemoryDetails: true, RuntimeSort: true}},
 		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, CrashInvestigation: true}},
 	}}
@@ -211,7 +211,10 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusCancelled}, err
 	}
 	trendOptions := req.Options.Samples != 0 || req.Options.Interval != 0 || req.Options.RuntimeTop != 0 || req.Options.CPUThreshold != 0 || req.Options.MemoryThreshold != 0
-	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && (trendOptions || req.Options.MemoryDetails || req.Options.RuntimeSort != "") || req.Options.DiskDetails && req.Operation != plugins.OperationDisk || req.Options.LogTail < 0 || req.Options.LogTail > 200 || req.Options.LogTail != 0 && !req.Options.CrashInvestigation || (req.Options.CrashInvestigation || req.Options.LogTail != 0) && req.Operation != plugins.OperationConfig {
+	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && (trendOptions || req.Options.MemoryDetails || req.Options.RuntimeSort != "") || req.Options.DiskDetails && req.Operation != plugins.OperationDisk || req.Options.LogTail < 0 || req.Options.LogTail > 200 || req.Options.LogTail != 0 && !req.Options.CrashInvestigation || (req.Options.CrashInvestigation || req.Options.LogTail != 0) && req.Operation != plugins.OperationConfig || req.Operation != plugins.OperationDisk && (req.Options.ImageFilter != "" || req.Options.DiskSort != "" || req.Options.HostCapacity) {
+		return plugins.Outcome{}, plugins.ErrInvalid
+	}
+	if req.Options.ImageFilter != "" && req.Options.ImageFilter != plugins.DockerImageFilterAll && req.Options.ImageFilter != plugins.DockerImageFilterUnused && req.Options.ImageFilter != plugins.DockerImageFilterDangling && req.Options.ImageFilter != plugins.DockerImageFilterReferenced || req.Options.DiskSort != "" && req.Options.DiskSort != plugins.DockerDiskSortSize && req.Options.DiskSort != plugins.DockerDiskSortUniqueSize && req.Options.DiskSort != plugins.DockerDiskSortName {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	if validateTargetOptions(req.Options) != nil {
@@ -235,12 +238,19 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	ctx = context.WithValue(ctx, selectorKey{}, append([]string(nil), req.Options.Containers...))
 	ctx = context.WithValue(ctx, projectKey{}, req.Options.Project)
 	ctx = context.WithValue(ctx, crashOptionsKey{}, crashOptions{enabled: req.Options.CrashInvestigation, tail: req.Options.LogTail})
+	ctx = context.WithValue(ctx, contextKey{}, req.Options.Context)
 	var err error
 	switch req.Operation {
 	case plugins.OperationDisk:
+		if req.Options.HostCapacity {
+			initHostCapacity(ctx, p, d)
+		}
 		err = p.disk(ctx, d, &o)
-		if err == nil && req.Options.DiskDetails {
+		if err == nil && (req.Options.DiskDetails || req.Options.ImageFilter != "" || req.Options.DiskSort != "" || req.Options.HostCapacity) {
 			err = p.diskDetails(ctx, d, &o)
+			if err == nil {
+				applyImageOptions(d, req.Options)
+			}
 		}
 	case plugins.OperationRuntime:
 		err = p.runtimeSamples(ctx, req.Options, d, &o)

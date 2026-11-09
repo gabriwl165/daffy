@@ -149,6 +149,22 @@ An unavailable or invalid drill-down preserves an already collected summary.
 `--details` requires an explicit `disk` operation and cannot combine with container
 or project filtering. Disk accounting may be slow on daemons with large caches.
 
+The disk API supports image filters (`all`, `unused`, `dangling`, `referenced`),
+sorting (`size`, `unique-size`, `name`), and opt-in `host_capacity`. Image filters
+and sorting imply detailed accounting. Typed image rows retain shared/unique
+sizes and distinguish unknown references from zero references; daemon reference
+counts include stopped containers. Filtering applies to both image views.
+Unreferenced and dangling are different states, neither a deletion guarantee.
+
+Host capacity verifies a local Unix endpoint, a socket-owning `dockerd` process,
+matching mount namespace and filesystem root before reading filesystem bytes and
+inodes on Linux. Explicit context, `DOCKER_CONTEXT`, and `DOCKER_HOST` precedence
+matches Docker selection. Inaccessible, remote, VM-backed, other-platform, or
+unverified filesystems are explicitly unavailable, not replaced with client disk
+usage. Less than 10% available bytes or inodes produces an observational warning.
+Permission restrictions can prevent verification even for a local daemon.
+CLI flags are introduced in the later CLI PR.
+
 ### Bazel
 
 Supply a local Bazel output/cache directory with `--path`. Daffy reports observed

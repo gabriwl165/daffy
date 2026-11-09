@@ -63,6 +63,9 @@ type Options struct {
 	LogTail            int               `json:"log_tail,omitempty"`
 	MemoryDetails      bool              `json:"memory_details,omitempty"`
 	RuntimeSort        DockerRuntimeSort `json:"runtime_sort,omitempty"`
+	ImageFilter        DockerImageFilter `json:"image_filter,omitempty"`
+	DiskSort           DockerDiskSort    `json:"disk_sort,omitempty"`
+	HostCapacity       bool              `json:"host_capacity,omitempty"`
 }
 type DockerRuntimeSort string
 
@@ -88,6 +91,7 @@ type SupportedOptions struct {
 	CrashInvestigation bool `json:"crash_investigation,omitempty"`
 	MemoryDetails      bool `json:"memory_details,omitempty"`
 	RuntimeSort        bool `json:"runtime_sort,omitempty"`
+	StorageAnalysis    bool `json:"storage_analysis,omitempty"`
 }
 type Operation struct {
 	ID      OperationID      `json:"id"`
@@ -191,6 +195,8 @@ type DockerDetails struct {
 	RuntimeTrend  *DockerRuntimeTrend      `json:"runtime_trend,omitempty"`
 	Crashes       []DockerCrashDiagnostic  `json:"crashes,omitempty"`
 	Memory        []DockerMemoryDiagnostic `json:"memory,omitempty"`
+	Images        []DockerImageDiagnostic  `json:"images,omitempty"`
+	Storage       *DockerStorage           `json:"storage,omitempty"`
 }
 type DockerRuntimeTrend struct {
 	SampleCount int                      `json:"sample_count"`
@@ -361,6 +367,9 @@ func (r *Registry) RunWithTimeoutObserved(ctx context.Context, pluginID PluginID
 	}
 	for _, op := range selected {
 		opts := req.Options
+		if opts.ImageFilter != "" && opts.ImageFilter != DockerImageFilterAll && opts.ImageFilter != DockerImageFilterUnused && opts.ImageFilter != DockerImageFilterDangling && opts.ImageFilter != DockerImageFilterReferenced || opts.DiskSort != "" && opts.DiskSort != DockerDiskSortSize && opts.DiskSort != DockerDiskSortUniqueSize && opts.DiskSort != DockerDiskSortName {
+			return report, fmt.Errorf("%w: invalid Docker storage option", ErrInvalid)
+		}
 		trendOptions := opts.Samples != 0 || opts.Interval != 0 || opts.RuntimeTop != 0 || opts.CPUThreshold != 0 || opts.MemoryThreshold != 0
 		if opts.MemoryDetails && !op.Options.MemoryDetails || opts.RuntimeSort != "" && !op.Options.RuntimeSort || opts.RuntimeSort != "" && opts.RuntimeSort != DockerRuntimeSortCPU && opts.RuntimeSort != DockerRuntimeSortMemory || opts.Path != "" && !op.Options.Path || len(opts.Excludes) > 0 && !op.Options.Excludes || opts.TopN != 0 && !op.Options.TopN || opts.TopN < 0 || opts.Context != "" && !op.Options.Context || len(opts.Containers) > 0 && !op.Options.Containers || opts.Project != "" && !op.Options.Project || trendOptions && !op.Options.RuntimeTrends || opts.DiskDetails && !op.Options.DiskDetails || opts.CrashInvestigation && !op.Options.CrashInvestigation || opts.LogTail != 0 && (!opts.CrashInvestigation || !op.Options.CrashInvestigation) || (op.Options.RequirePath && opts.Path == "") {
 			return report, fmt.Errorf("%w: unsupported or invalid options for %q", ErrInvalid, op.ID)

@@ -3,6 +3,9 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"math"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gabriwl165/daffy/internal/plugins"
@@ -89,7 +92,140 @@ func (p *Plugin) diskDetails(ctx context.Context, d *plugins.DockerDetails, o *p
 		{Category: "volumes", Items: mapVolumes(*env.Volumes)},
 		{Category: "build cache", Items: mapCache(*env.BuildCache)},
 	}
+	d.Images = imageDiagnostics(*env.Images)
+	capacity := (*plugins.DockerHostCapacity)(nil)
+	warnings, limits := []string{}, []string{}
+	if d.Storage != nil {
+		capacity = d.Storage.HostCapacity
+		warnings = append(warnings, d.Storage.Warnings...)
+		limits = append(limits, d.Storage.Limits...)
+	}
+	warnings = append(warnings, "Image sizes include shared layers and must not be summed as reclaimable storage.")
+	limits = append(limits, "Image reference counts are Docker daemon accounting and do not establish deletion safety.")
+	d.Storage = &plugins.DockerStorage{SharedLayers: true, SizeTotalsComparable: false, Warnings: warnings, Limits: limits, HostCapacity: capacity}
 	return nil
+}
+
+func imageDiagnostics(rows []diskImage) []plugins.DockerImageDiagnostic {
+	out := make([]plugins.DockerImageDiagnostic, 0, len(rows))
+	for _, r := range rows {
+		state := plugins.DockerImageReferenceUnknown
+		var refs *int64
+		if n, err := strconv.ParseInt(strings.TrimSpace(r.Containers), 10, 64); err == nil && n >= 0 {
+			refs = &n
+			if n > 0 {
+				state = plugins.DockerImageReferenceReferenced
+			} else {
+				state = plugins.DockerImageReferenceUnreferenced
+			}
+		}
+		tagState := plugins.DockerImageTagUnknown
+		if r.Repository != "" && r.Tag != "" && r.Repository != "<none>" && r.Tag != "<none>" {
+			tagState = plugins.DockerImageTagTagged
+		} else if r.Repository == "<none>" && r.Tag == "<none>" {
+			tagState = plugins.DockerImageTagDangling
+		}
+		out = append(out, plugins.DockerImageDiagnostic{Repository: r.Repository, Tag: r.Tag, ID: r.ID, Size: r.Size, SizeBytes: parseDockerBytes(r.Size), SharedSize: r.SharedSize, UniqueSize: r.UniqueSize, UniqueSizeBytes: parseDockerBytes(r.UniqueSize), ReferenceState: state, ReferenceCount: refs, TagState: tagState})
+	}
+	return out
+}
+
+func parseDockerBytes(s string) *int64 {
+	parts := strings.Fields(strings.TrimSpace(s))
+	if len(parts) == 1 {
+		for _, unit := range []string{"KiB", "MiB", "GiB", "TiB", "kB", "KB", "MB", "GB", "TB", "B"} {
+			if strings.HasSuffix(parts[0], unit) {
+				parts = []string{strings.TrimSuffix(parts[0], unit), unit}
+				break
+			}
+		}
+	}
+	if len(parts) != 2 {
+		return nil
+	}
+	v, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return nil
+	}
+	var m float64
+	for _, unit := range []struct {
+		name       string
+		multiplier float64
+	}{{"B", 1}, {"kB", 1e3}, {"KB", 1e3}, {"MB", 1e6}, {"GB", 1e9}, {"TB", 1e12}, {"KiB", 1024}, {"MiB", 1024 * 1024}, {"GiB", 1024 * 1024 * 1024}, {"TiB", math.Pow(1024, 4)}} {
+		if unit.name == parts[1] {
+			m = unit.multiplier
+			break
+		}
+	}
+	ok := m != 0
+	if !ok || v*m >= float64(math.MaxInt64) {
+		return nil
+	}
+	n := int64(v * m)
+	return &n
+}
+
+func applyImageOptions(d *plugins.DockerDetails, o plugins.Options) {
+	if d.Storage == nil {
+		d.Storage = &plugins.DockerStorage{}
+	}
+	if o.ImageFilter != "" && o.ImageFilter != plugins.DockerImageFilterAll {
+		filtered := make([]plugins.DockerImageDiagnostic, 0, len(d.Images))
+		for _, img := range d.Images {
+			switch o.ImageFilter {
+			case plugins.DockerImageFilterUnused:
+				if img.ReferenceState == plugins.DockerImageReferenceUnreferenced {
+					filtered = append(filtered, img)
+				}
+			case plugins.DockerImageFilterReferenced:
+				if img.ReferenceState == plugins.DockerImageReferenceReferenced {
+					filtered = append(filtered, img)
+				}
+			case plugins.DockerImageFilterDangling:
+				if img.TagState == plugins.DockerImageTagDangling {
+					filtered = append(filtered, img)
+				}
+			}
+		}
+		d.Images = filtered
+		for i := range d.DiskBreakdown {
+			if d.DiskBreakdown[i].Category == "images" {
+				items := make([]plugins.DockerDiskItem, 0, len(filtered))
+				for _, img := range filtered {
+					for _, item := range d.DiskBreakdown[i].Items {
+						if item.ID == img.ID {
+							items = append(items, item)
+							break
+						}
+					}
+				}
+				d.DiskBreakdown[i].Items = items
+			}
+		}
+	}
+	switch o.DiskSort {
+	case plugins.DockerDiskSortSize:
+		sort.SliceStable(d.Images, func(i, j int) bool {
+			return imageSizeLess(d.Images[i].SizeBytes, d.Images[j].SizeBytes)
+		})
+	case plugins.DockerDiskSortUniqueSize:
+		sort.SliceStable(d.Images, func(i, j int) bool {
+			return imageSizeLess(d.Images[i].UniqueSizeBytes, d.Images[j].UniqueSizeBytes)
+		})
+	case plugins.DockerDiskSortName:
+		sort.SliceStable(d.Images, func(i, j int) bool {
+			return d.Images[i].Repository+":"+d.Images[i].Tag < d.Images[j].Repository+":"+d.Images[j].Tag
+		})
+	}
+}
+func imageSizeLess(a, b *int64) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	return *a > *b
 }
 func hasValue(s string) bool { return strings.TrimSpace(s) != "" }
 func mapImages(rows []diskImage) []plugins.DockerDiskItem {
