@@ -51,6 +51,10 @@ command stderr are not included in reports. Container names and identifiers can
 still be sensitive. Docker daemon access is highly privileged even when the
 commands issued by Daffy are read-only. Command time, output and inspected
 container counts are bounded; incomplete collection must be visible in reports.
+Known command failures distinguish a missing Docker CLI, denied daemon access,
+an unreachable daemon, and unsupported operations with fixed diagnostic text.
+Classification is best-effort; unfamiliar or localized errors remain generic.
+Raw stderr is used only for bounded internal classification, never emitted.
 
 ### Bazel
 

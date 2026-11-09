@@ -49,6 +49,9 @@ var (
 	ErrOutputLimit     = errors.New("Docker command output exceeded limit")
 	ErrUnavailable     = errors.New("Docker executable unavailable")
 	ErrInvalidResponse = errors.New("invalid Docker response")
+	ErrPermission      = errors.New("Docker permission denied")
+	ErrConnection      = errors.New("Docker daemon connection failed")
+	ErrUnsupported     = errors.New("Docker operation unsupported")
 )
 
 // Runner executes a Docker CLI invocation without a shell.
@@ -133,9 +136,26 @@ func (r *CommandRunner) Run(ctx context.Context, args ...string) ([]byte, error)
 		if errors.Is(err, os.ErrNotExist) || errors.As(err, &execErr) && errors.Is(execErr.Err, exec.ErrNotFound) {
 			return nil, ErrUnavailable
 		}
+		if category := classifyStderr(errOut.buffer.String()); category != nil {
+			return nil, category
+		}
 		return nil, ErrCommandFailed
 	}
 	return out.buffer.Bytes(), nil
+}
+
+func classifyStderr(stderr string) error {
+	s := strings.ToLower(stderr)
+	switch {
+	case strings.Contains(s, "permission denied"), strings.Contains(s, "access is denied"):
+		return ErrPermission
+	case strings.Contains(s, "cannot connect to the docker daemon"), strings.Contains(s, "connection refused"), strings.Contains(s, "docker.sock") && strings.Contains(s, "no such file"):
+		return ErrConnection
+	case strings.Contains(s, "unknown flag"), strings.Contains(s, "unknown shorthand flag"), strings.Contains(s, "is not a docker command"), strings.Contains(s, "not supported"):
+		return ErrUnsupported
+	default:
+		return nil
+	}
 }
 
 type Plugin struct{ runner Runner }
@@ -219,7 +239,7 @@ func (p *Plugin) call(ctx context.Context, command string, args ...string) ([]by
 		if errors.Is(e, context.Canceled) {
 			return nil, e
 		}
-		if errors.Is(e, ErrCommandFailed) || errors.Is(e, ErrOutputLimit) || errors.Is(e, ErrUnavailable) {
+		if errors.Is(e, ErrCommandFailed) || errors.Is(e, ErrOutputLimit) || errors.Is(e, ErrUnavailable) || errors.Is(e, ErrPermission) || errors.Is(e, ErrConnection) || errors.Is(e, ErrUnsupported) {
 			return nil, e
 		}
 		return nil, ErrCommandFailed
@@ -233,7 +253,29 @@ func fail(o *plugins.Outcome, code string) {
 func failCommand(o *plugins.Outcome, code string, err error) {
 	var timeoutErr *commandTimeoutError
 	if !errors.As(err, &timeoutErr) {
-		fail(o, code)
+		switch {
+		case errors.Is(err, ErrUnavailable):
+			code = "docker_cli_unavailable"
+		case errors.Is(err, ErrPermission):
+			code = "docker_permission_denied"
+		case errors.Is(err, ErrConnection):
+			code = "docker_daemon_unreachable"
+		case errors.Is(err, ErrUnsupported):
+			code = "docker_operation_unsupported"
+		}
+		summary := "Docker data could not be read or validated"
+		switch {
+		case errors.Is(err, ErrUnavailable):
+			summary = "Docker CLI is unavailable; install Docker CLI and ensure it is on PATH"
+		case errors.Is(err, ErrPermission):
+			summary = "Docker access was denied; check daemon/socket permissions or user group membership"
+		case errors.Is(err, ErrConnection):
+			summary = "Docker daemon is unreachable; check that the daemon is running and the selected context is valid"
+		case errors.Is(err, ErrUnsupported):
+			summary = "Docker CLI or daemon does not support this operation; check the installed Docker version"
+		}
+		o.Issues = append(o.Issues, plugins.Issue{Code: code, Summary: summary})
+		o.Status = plugins.StatusPartial
 	}
 }
 func (p *Plugin) disk(ctx context.Context, d *plugins.DockerDetails, o *plugins.Outcome) error {

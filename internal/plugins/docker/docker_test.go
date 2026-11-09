@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,119 @@ func TestAnalyzePreservesCommandDeadline(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("command deadline lost: %v", err)
 	}
+}
+
+func TestStderrClassificationIsAllowlistedAndPrivate(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want error
+	}{
+		{"permission denied while connecting", ErrPermission},
+		{"Cannot connect to the Docker daemon at tcp://localhost", ErrConnection},
+		{"unknown flag: --new-option", ErrUnsupported},
+		{"daemon failed with secret-token-123", nil},
+	} {
+		got := classifyStderr(tc.text)
+		if !errors.Is(got, tc.want) {
+			t.Fatalf("classify %q = %v, want %v", tc.text, got, tc.want)
+		}
+		if got != nil && strings.Contains(got.Error(), tc.text) {
+			t.Fatalf("raw stderr leaked: %v", got)
+		}
+	}
+}
+
+func TestClassifiedCommandErrorsUseFixedIssues(t *testing.T) {
+	for _, tc := range []struct {
+		err        error
+		code, text string
+	}{
+		{ErrUnavailable, "docker_cli_unavailable", "Docker CLI is unavailable"},
+		{ErrPermission, "docker_permission_denied", "Docker access was denied"},
+		{ErrConnection, "docker_daemon_unreachable", "Docker daemon is unreachable"},
+		{ErrUnsupported, "docker_operation_unsupported", "does not support this operation"},
+	} {
+		o, err := New(&fakeRunner{errs: []error{tc.err}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
+		if err == nil || len(o.Issues) != 1 || o.Issues[0].Code != tc.code || !strings.Contains(o.Issues[0].Summary, tc.text) {
+			t.Fatalf("outcome=%+v err=%v", o, err)
+		}
+		b, _ := json.Marshal(o)
+		if strings.Contains(string(b), "private") {
+			t.Fatalf("raw diagnostic leaked: %s", b)
+		}
+	}
+	r := NewCommandRunner()
+	r.Binary = "/definitely/missing/docker-cli"
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
+	if !errors.Is(err, ErrUnavailable) || len(o.Issues) != 1 || !strings.Contains(o.Issues[0].Summary, "install Docker CLI") {
+		t.Fatalf("missing CLI outcome=%+v err=%v", o, err)
+	}
+}
+
+func TestDockerCommandHelper(t *testing.T) {
+	if os.Getenv("DAFFY_DOCKER_COMMAND_HELPER") != "1" {
+		return
+	}
+	args := os.Args
+	for i := range args {
+		if args[i] == "--" && i+1 < len(args) {
+			args = args[i+1:]
+			break
+		}
+	}
+	if len(args) == 0 {
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "permission":
+		fmt.Fprintln(os.Stderr, "permission denied")
+	case "connection":
+		fmt.Fprintln(os.Stderr, "Cannot connect to the Docker daemon at tcp://private-host")
+	case "unsupported":
+		fmt.Fprintln(os.Stderr, "unknown flag: --private-flag")
+	default:
+		fmt.Fprintln(os.Stderr, "daemon failed secret-token-123")
+	}
+	os.Exit(1)
+}
+
+func TestCommandRunnerSubprocessDiagnosticsArePrivate(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		mode string
+		want error
+	}{{"permission", ErrPermission}, {"connection", ErrConnection}, {"unsupported", ErrUnsupported}, {"private", ErrCommandFailed}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			t.Setenv("DAFFY_DOCKER_COMMAND_HELPER", "1")
+			r := &CommandRunner{Binary: bin, OutputLimit: 1024}
+			// Exercise the actual command runner through Plugin report construction.
+			o, err := New(subprocessDiagnosticRunner{runner: r, mode: tc.mode}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error=%v want %v", err, tc.want)
+			}
+			if strings.Contains(fmt.Sprint(err), "secret-token-123") || strings.Contains(fmt.Sprint(err), "private-host") || strings.Contains(fmt.Sprint(err), "private-flag") {
+				t.Fatalf("stderr leaked: %v", err)
+			}
+			encoded, _ := json.Marshal(o)
+			for _, private := range []string{"secret-token-123", "private-host", "private-flag"} {
+				if strings.Contains(string(encoded), private) {
+					t.Fatalf("report leaked %q: %s", private, encoded)
+				}
+			}
+		})
+	}
+}
+
+type subprocessDiagnosticRunner struct {
+	runner *CommandRunner
+	mode   string
+}
+
+func (r subprocessDiagnosticRunner) Run(ctx context.Context, _ ...string) ([]byte, error) {
+	return r.runner.Run(ctx, "-test.run=^TestDockerCommandHelper$", "--", r.mode)
 }
 
 func TestDockerTimeoutIssueUsesSafeCommandIdentity(t *testing.T) {

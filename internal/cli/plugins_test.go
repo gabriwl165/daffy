@@ -24,6 +24,22 @@ func TestPrintPluginReportRecommendationEscaping(t *testing.T) {
 	}
 }
 
+type recommendationErrorWriter struct{}
+
+func (recommendationErrorWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("Recommendation:")) {
+		return 0, errors.New("writer failed")
+	}
+	return len(p), nil
+}
+
+func TestPrintPluginReportRecommendationWriteError(t *testing.T) {
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationConfig, Status: plugins.StatusComplete, Findings: []plugins.Finding{{Recommendation: "action"}}}}}
+	if err := printPluginReport(recommendationErrorWriter{}, r); err == nil || err.Error() != "writer failed" {
+		t.Fatalf("recommendation write error = %v", err)
+	}
+}
+
 func TestDefaultDepsHasBuiltinPluginRegistry(t *testing.T) {
 	r := DefaultDeps().Plugins
 	if r == nil {
