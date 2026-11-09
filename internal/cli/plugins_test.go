@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -334,6 +335,42 @@ func TestDockerConciseAndVerboseText(t *testing.T) {
 	}
 	if !strings.Contains(full.String(), "full-detail") || !strings.Contains(full.String(), "Context: dev") {
 		t.Fatalf("verbose output omitted legacy detail: %q", full.String())
+	}
+}
+
+func TestDockerSummaryGroupsPrioritizesLimitsAndShowsGapsLast(t *testing.T) {
+	runtime := make([]plugins.DockerContainerStats, 7)
+	for i := range runtime {
+		runtime[i] = plugins.DockerContainerStats{ID: fmt.Sprintf("container-%08d", i), Name: fmt.Sprintf("worker-%d", i), CPUPerc: "9%", MemUsage: "1GiB", MemPerc: "10%"}
+	}
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusPartial, Outcomes: []plugins.Outcome{
+		{Operation: plugins.OperationConfig, Status: plugins.StatusComplete, Findings: []plugins.Finding{
+			{Code: "docker_memory_unlimited", Severity: plugins.SeverityInfo, Summary: "Container worker A (container-00000001) has no memory limit"},
+			{Code: "docker_memory_unlimited", Severity: plugins.SeverityInfo, Summary: "Container worker B (container-00000002) has no memory limit"},
+			{Code: "warning", Severity: plugins.SeverityWarning, Summary: "container-00000001 failed", Recommendation: "Inspect container-00000001; keep container-00000001-copy unchanged."},
+		}, Details: plugins.Details{Docker: &plugins.DockerDetails{Config: []plugins.DockerContainerConfig{{ID: "container-00000001"}}}}},
+		{Operation: plugins.OperationRuntime, Status: plugins.StatusComplete, Details: plugins.Details{Docker: &plugins.DockerDetails{Runtime: runtime}}},
+		{Operation: plugins.OperationDisk, Status: plugins.StatusPartial, Issues: []plugins.Issue{{Summary: "disk command timed out"}}, Details: plugins.Details{Docker: &plugins.DockerDetails{DiskUsage: []plugins.DockerDiskUsage{{Category: "images", Size: "8GB"}}}}},
+	}}
+	var out bytes.Buffer
+	if err := printPluginReport(&out, r, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Count(text, "have no memory limit") != 1 || !strings.Contains(text, "2 containers have no memory limit") {
+		t.Fatalf("missing limit notices not grouped: %s", text)
+	}
+	if strings.Index(text, "[warning]") > strings.Index(text, "[info]") || strings.Index(text, "[info]") > strings.Index(text, "Container container-00 · worker-0") || strings.Index(text, "Container container-00 · worker-0") > strings.Index(text, "Storage · images") {
+		t.Fatalf("sections out of priority order: %s", text)
+	}
+	if strings.Count(text, "Container container-") != 6 || !strings.Contains(text, "2 more containers hidden; use --verbose") {
+		t.Fatalf("runtime limit missing: %s", text)
+	}
+	if !strings.Contains(text, "container-00000001-copy") || !strings.Contains(text, "container-00 failed") {
+		t.Fatalf("ID shortening corrupted text: %s", text)
+	}
+	if strings.Index(text, "Collection gaps:") < strings.Index(text, "Storage · images") || !strings.Contains(text, "disk command timed out") {
+		t.Fatalf("collection gaps not last/visible: %s", text)
 	}
 }
 

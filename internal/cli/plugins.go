@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gabriwl165/daffy/internal/plugins"
 )
@@ -38,6 +39,7 @@ const (
 	pluginDefaultTimeout      = 15 * time.Second
 	pluginDefaultTop          = 20
 	pluginMaximumTop          = 10000
+	dockerSummaryRuntimeLimit = 5
 )
 
 const pluginUsage = `Usage: daffy plugins list [--json]
@@ -404,20 +406,70 @@ func printDockerSummary(w io.Writer, r plugins.Report) error {
 			return err
 		}
 	}
-	// Put actionable findings and collection gaps before measurements.
+	var dockerIDs []string
+	for _, outcome := range r.Outcomes {
+		if d := outcome.Details.Docker; d != nil {
+			for _, c := range d.Config {
+				dockerIDs = append(dockerIDs, c.ID)
+			}
+			for _, c := range d.Runtime {
+				dockerIDs = append(dockerIDs, c.ID)
+			}
+			if d.RuntimeTrend != nil {
+				for _, c := range d.RuntimeTrend.Containers {
+					dockerIDs = append(dockerIDs, c.ID)
+				}
+			}
+		}
+	}
+	// Actionable warnings lead; repeated missing-memory-limit notes become one notice.
+	type missingMemoryNotice struct {
+		count          int
+		recommendation string
+	}
+	missingMemory := missingMemoryNotice{}
 	for _, outcome := range r.Outcomes {
 		for _, finding := range outcome.Findings {
-			if _, err := fmt.Fprintf(w, "[%s] %s\n", safe(string(finding.Severity)), safe(finding.Summary)); err != nil {
+			if finding.Code == "docker_memory_unlimited" {
+				missingMemory.count++
+				if finding.Recommendation != "" {
+					missingMemory.recommendation = finding.Recommendation
+				}
+				continue
+			}
+			if finding.Severity != plugins.SeverityWarning {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "[warning] %s\n", safe(shortenKnownIDs(finding.Summary, dockerIDs))); err != nil {
 				return err
 			}
 			if finding.Recommendation != "" {
-				if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(finding.Recommendation)); err != nil {
+				if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(shortenKnownIDs(finding.Recommendation, dockerIDs))); err != nil {
 					return err
 				}
 			}
 		}
-		for _, issue := range outcome.Issues {
-			if _, err := fmt.Fprintf(w, "Collection: %s\n", safe(issue.Summary)); err != nil {
+	}
+	for _, outcome := range r.Outcomes {
+		for _, finding := range outcome.Findings {
+			if finding.Severity == plugins.SeverityInfo && finding.Code != "docker_memory_unlimited" {
+				if _, err := fmt.Fprintf(w, "[info] %s\n", safe(shortenKnownIDs(finding.Summary, dockerIDs))); err != nil {
+					return err
+				}
+				if finding.Recommendation != "" {
+					if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(shortenKnownIDs(finding.Recommendation, dockerIDs))); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	if missingMemory.count > 0 {
+		if _, err := fmt.Fprintf(w, "[info] %d containers have no memory limit\n", missingMemory.count); err != nil {
+			return err
+		}
+		if missingMemory.recommendation != "" {
+			if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(missingMemory.recommendation)); err != nil {
 				return err
 			}
 		}
@@ -427,35 +479,102 @@ func printDockerSummary(w io.Writer, r plugins.Report) error {
 		if d == nil {
 			continue
 		}
-		if outcome.Status != plugins.StatusComplete {
-			if _, err := fmt.Fprintf(w, "%s: %s\n", safe(string(outcome.Operation)), safe(string(outcome.Status))); err != nil {
-				return err
-			}
-		}
-		for _, row := range d.DiskUsage {
-			if _, err := fmt.Fprintf(w, "Storage · %s: %s total, %s reclaimable (%d active / %d)\n", safe(row.Category), safe(row.Size), safe(row.Reclaimable), row.Active, row.TotalCount); err != nil {
-				return err
-			}
-		}
-		for _, row := range d.Runtime {
-			if _, err := fmt.Fprintf(w, "Container %s · CPU %s · memory %s (%s)\n", safe(shortContainerID(row.ID)), safe(row.CPUPerc), safe(row.MemUsage), safe(row.MemPerc)); err != nil {
-				return err
-			}
-		}
 		for _, row := range d.Config {
 			if _, err := fmt.Fprintf(w, "Container %s · %s · %s\n", safe(shortContainerID(row.ID)), safe(row.Name), safe(row.Status)); err != nil {
 				return err
 			}
 		}
+		for index, row := range d.Runtime {
+			if index >= dockerSummaryRuntimeLimit {
+				if _, err := fmt.Fprintf(w, "%d more containers hidden; use --verbose to show all.\n", len(d.Runtime)-index); err != nil {
+					return err
+				}
+				break
+			}
+			if _, err := fmt.Fprintf(w, "Container %s · %s · CPU %s · memory %s (%s)\n", safe(shortContainerID(row.ID)), safe(row.Name), safe(row.CPUPerc), safe(row.MemUsage), safe(row.MemPerc)); err != nil {
+				return err
+			}
+		}
 		if d.RuntimeTrend != nil {
-			for _, row := range d.RuntimeTrend.Containers {
+			for index, row := range d.RuntimeTrend.Containers {
+				if index >= dockerSummaryRuntimeLimit {
+					if _, err := fmt.Fprintf(w, "%d more runtime peaks hidden; use --verbose to show all.\n", len(d.RuntimeTrend.Containers)-index); err != nil {
+						return err
+					}
+					break
+				}
 				if _, err := fmt.Fprintf(w, "Peak %s · CPU %.1f%% · memory %.1f%%\n", safe(shortContainerID(row.ID)), row.PeakCPUPercent, row.PeakMemoryPercent); err != nil {
 					return err
 				}
 			}
 		}
 	}
+	for _, outcome := range r.Outcomes {
+		d := outcome.Details.Docker
+		if d == nil {
+			continue
+		}
+		for _, row := range d.DiskUsage {
+			if _, err := fmt.Fprintf(w, "Storage · %s: %s total, %s reclaimable (%d active / %d)\n", safe(row.Category), safe(row.Size), safe(row.Reclaimable), row.Active, row.TotalCount); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := fmt.Fprintln(w, ""); err != nil {
+		return err
+	}
+	gapWritten := false
+	for _, outcome := range r.Outcomes {
+		if outcome.Status == plugins.StatusPartial || outcome.Status == plugins.StatusUnavailable || outcome.Status == plugins.StatusCancelled {
+			if !gapWritten {
+				if _, err := fmt.Fprintln(w, "Collection gaps:"); err != nil {
+					return err
+				}
+				gapWritten = true
+			}
+			if _, err := fmt.Fprintf(w, "  %s: %s\n", safe(string(outcome.Operation)), safe(string(outcome.Status))); err != nil {
+				return err
+			}
+		}
+		for _, issue := range outcome.Issues {
+			if !gapWritten {
+				if _, err := fmt.Fprintln(w, "Collection gaps:"); err != nil {
+					return err
+				}
+				gapWritten = true
+			}
+			if _, err := fmt.Fprintf(w, "  %s: %s\n", safe(string(outcome.Operation)), safe(issue.Summary)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+func shortenKnownIDs(text string, ids []string) string {
+	for _, id := range ids {
+		if len(id) <= 12 {
+			continue
+		}
+		start := 0
+		for {
+			i := strings.Index(text[start:], id)
+			if i < 0 {
+				break
+			}
+			i += start
+			end := i + len(id)
+			leftOK := i == 0 || (!unicode.IsLetter(rune(text[i-1])) && !unicode.IsDigit(rune(text[i-1])) && text[i-1] != '-' && text[i-1] != '_')
+			rightOK := end == len(text) || (!unicode.IsLetter(rune(text[end])) && !unicode.IsDigit(rune(text[end])) && text[end] != '-' && text[end] != '_')
+			if leftOK && rightOK {
+				text = text[:i] + id[:12] + text[end:]
+				start = i + 12
+			} else {
+				start = end
+			}
+		}
+	}
+	return text
 }
 
 func shortContainerID(id string) string {
