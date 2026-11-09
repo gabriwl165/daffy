@@ -17,6 +17,18 @@ type PluginID string
 type OperationID string
 type Status string
 type Access string
+type DockerImageFilter string
+type DockerDiskSort string
+
+const (
+	DockerImageFilterAll        DockerImageFilter = "all"
+	DockerImageFilterUnused     DockerImageFilter = "unused"
+	DockerImageFilterDangling   DockerImageFilter = "dangling"
+	DockerImageFilterReferenced DockerImageFilter = "referenced"
+	DockerDiskSortSize          DockerDiskSort    = "size"
+	DockerDiskSortUniqueSize    DockerDiskSort    = "unique-size"
+	DockerDiskSortName          DockerDiskSort    = "name"
+)
 
 const (
 	PluginDocker         PluginID    = "docker"
@@ -63,6 +75,9 @@ type Options struct {
 	LogTail            int               `json:"log_tail,omitempty"`
 	MemoryDetails      bool              `json:"memory_details,omitempty"`
 	RuntimeSort        DockerRuntimeSort `json:"runtime_sort,omitempty"`
+	ImageFilter        DockerImageFilter `json:"image_filter,omitempty"`
+	DiskSort           DockerDiskSort    `json:"disk_sort,omitempty"`
+	HostCapacity       bool              `json:"host_capacity,omitempty"`
 }
 type DockerRuntimeSort string
 
@@ -88,6 +103,7 @@ type SupportedOptions struct {
 	CrashInvestigation bool `json:"crash_investigation,omitempty"`
 	MemoryDetails      bool `json:"memory_details,omitempty"`
 	RuntimeSort        bool `json:"runtime_sort,omitempty"`
+	StorageAnalysis    bool `json:"storage_analysis,omitempty"`
 }
 type Operation struct {
 	ID      OperationID      `json:"id"`
@@ -191,6 +207,36 @@ type DockerDetails struct {
 	RuntimeTrend  *DockerRuntimeTrend      `json:"runtime_trend,omitempty"`
 	Crashes       []DockerCrashDiagnostic  `json:"crashes,omitempty"`
 	Memory        []DockerMemoryDiagnostic `json:"memory,omitempty"`
+	Images        []DockerImageDiagnostic  `json:"images,omitempty"`
+	Storage       *DockerStorage           `json:"storage,omitempty"`
+}
+type DockerImageDiagnostic struct {
+	Repository      string `json:"repository,omitempty"`
+	Tag             string `json:"tag,omitempty"`
+	ID              string `json:"id"`
+	Size            string `json:"size"`
+	SizeBytes       *int64 `json:"size_bytes,omitempty"`
+	UniqueSize      string `json:"unique_size,omitempty"`
+	UniqueSizeBytes *int64 `json:"unique_size_bytes,omitempty"`
+	ReferenceState  string `json:"reference_state"`
+	ReferenceCount  *int64 `json:"reference_count,omitempty"`
+	TagState        string `json:"tag_state"`
+}
+type DockerHostCapacity struct {
+	Available         bool    `json:"available"`
+	UnavailableReason string  `json:"unavailable_reason,omitempty"`
+	BytesTotal        *uint64 `json:"bytes_total,omitempty"`
+	BytesFree         *uint64 `json:"bytes_free,omitempty"`
+	BytesAvailable    *uint64 `json:"bytes_available,omitempty"`
+	InodesTotal       *uint64 `json:"inodes_total,omitempty"`
+	InodesFree        *uint64 `json:"inodes_free,omitempty"`
+}
+type DockerStorage struct {
+	SharedLayers         bool                `json:"shared_layers"`
+	SizeTotalsComparable bool                `json:"size_totals_comparable"`
+	Warnings             []string            `json:"warnings,omitempty"`
+	Limits               []string            `json:"limits,omitempty"`
+	HostCapacity         *DockerHostCapacity `json:"host_capacity,omitempty"`
 }
 type DockerRuntimeTrend struct {
 	SampleCount int                      `json:"sample_count"`

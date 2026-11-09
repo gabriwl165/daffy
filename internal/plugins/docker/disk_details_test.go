@@ -64,3 +64,28 @@ func TestDiskDetailsRejectsMalformedRowsAndRetainsSummary(t *testing.T) {
 		}
 	}
 }
+
+func TestImageDiagnosticsFilterSortUnknownAndHostUnavailable(t *testing.T) {
+	const env = `{"Images":[{"ID":"a","Repository":"z","Tag":"latest","Size":"2GB","UniqueSize":"1GB","Containers":"1"},{"ID":"b","Repository":"<none>","Tag":"<none>","Size":"bad","UniqueSize":"N/A","Containers":"N/A"},{"ID":"c","Repository":"a","Tag":"tag","Size":"1GB","UniqueSize":"500MB","Containers":"0"}],"Containers":[],"Volumes":[],"BuildCache":[]}`
+	makeRunner := func() *fakeRunner {
+		return &fakeRunner{outputs: [][]byte{[]byte(`{"Type":"Images","TotalCount":"3","Active":"1","Size":"3GB","Reclaimable":"0B"}`), []byte(env)}}
+	}
+	for _, tc := range []struct {
+		filter plugins.DockerImageFilter
+		count  int
+		id     string
+	}{{plugins.DockerImageFilterReferenced, 1, "a"}, {plugins.DockerImageFilterUnused, 1, "c"}, {plugins.DockerImageFilterDangling, 1, "b"}} {
+		o, err := New(makeRunner()).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk, Options: plugins.Options{ImageFilter: tc.filter}})
+		if err != nil || len(o.Details.Docker.Images) != tc.count || o.Details.Docker.Images[0].ID != tc.id {
+			t.Fatalf("filter %s: %#v %v", tc.filter, o, err)
+		}
+	}
+	o, err := New(makeRunner()).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationDisk, Options: plugins.Options{DiskSort: plugins.DockerDiskSortSize, HostCapacity: true}})
+	if err != nil || len(o.Details.Docker.Images) != 3 || o.Details.Docker.Images[0].ID != "a" || o.Details.Docker.Images[1].ID != "c" || o.Details.Docker.Images[2].SizeBytes != nil {
+		t.Fatalf("sort/parse: %#v %v", o, err)
+	}
+	storage := o.Details.Docker.Storage
+	if storage == nil || !storage.SharedLayers || storage.SizeTotalsComparable || storage.HostCapacity == nil || storage.HostCapacity.Available || storage.HostCapacity.UnavailableReason == "" {
+		t.Fatalf("storage safety: %#v", storage)
+	}
+}

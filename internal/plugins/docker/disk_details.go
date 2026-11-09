@@ -3,6 +3,9 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"math"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gabriwl165/daffy/internal/plugins"
@@ -89,7 +92,109 @@ func (p *Plugin) diskDetails(ctx context.Context, d *plugins.DockerDetails, o *p
 		{Category: "volumes", Items: mapVolumes(*env.Volumes)},
 		{Category: "build cache", Items: mapCache(*env.BuildCache)},
 	}
+	d.Images = imageDiagnostics(*env.Images)
+	d.Storage = &plugins.DockerStorage{SharedLayers: true, SizeTotalsComparable: false, Warnings: []string{"Image sizes include shared layers and must not be summed as reclaimable storage."}, Limits: []string{"Image reference counts are Docker daemon accounting and do not establish deletion safety."}}
 	return nil
+}
+
+func imageDiagnostics(rows []diskImage) []plugins.DockerImageDiagnostic {
+	out := make([]plugins.DockerImageDiagnostic, 0, len(rows))
+	for _, r := range rows {
+		state := "unknown"
+		var refs *int64
+		if n, err := strconv.ParseInt(strings.TrimSpace(r.Containers), 10, 64); err == nil && n >= 0 {
+			refs = &n
+			if n > 0 {
+				state = "referenced"
+			} else {
+				state = "unreferenced"
+			}
+		}
+		tagState := "tagged"
+		if r.Repository == "<none>" || r.Tag == "<none>" {
+			tagState = "dangling"
+		}
+		out = append(out, plugins.DockerImageDiagnostic{Repository: r.Repository, Tag: r.Tag, ID: r.ID, Size: r.Size, SizeBytes: parseDockerBytes(r.Size), UniqueSize: r.UniqueSize, UniqueSizeBytes: parseDockerBytes(r.UniqueSize), ReferenceState: state, ReferenceCount: refs, TagState: tagState})
+	}
+	return out
+}
+
+func parseDockerBytes(s string) *int64 {
+	parts := strings.Fields(strings.TrimSpace(s))
+	if len(parts) == 1 {
+		for _, unit := range []string{"KiB", "MiB", "GiB", "TiB", "kB", "KB", "MB", "GB", "TB", "B"} {
+			if strings.HasSuffix(parts[0], unit) {
+				parts = []string{strings.TrimSuffix(parts[0], unit), unit}
+				break
+			}
+		}
+	}
+	if len(parts) != 2 {
+		return nil
+	}
+	v, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil || v < 0 {
+		return nil
+	}
+	multipliers := map[string]float64{"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12, "KiB": 1024, "MiB": 1024 * 1024, "GiB": 1024 * 1024 * 1024, "TiB": math.Pow(1024, 4)}
+	m, ok := multipliers[parts[1]]
+	if !ok || v*m > math.MaxInt64 {
+		return nil
+	}
+	n := int64(v * m)
+	return &n
+}
+
+func applyImageOptions(d *plugins.DockerDetails, o plugins.Options) {
+	if d.Storage == nil {
+		d.Storage = &plugins.DockerStorage{}
+	}
+	if o.ImageFilter != "" && o.ImageFilter != plugins.DockerImageFilterAll {
+		filtered := make([]plugins.DockerImageDiagnostic, 0, len(d.Images))
+		for _, img := range d.Images {
+			switch o.ImageFilter {
+			case plugins.DockerImageFilterUnused:
+				if img.ReferenceState == "unreferenced" {
+					filtered = append(filtered, img)
+				}
+			case plugins.DockerImageFilterReferenced:
+				if img.ReferenceState == "referenced" {
+					filtered = append(filtered, img)
+				}
+			case plugins.DockerImageFilterDangling:
+				if img.TagState == "dangling" {
+					filtered = append(filtered, img)
+				}
+			}
+		}
+		d.Images = filtered
+	}
+	switch o.DiskSort {
+	case plugins.DockerDiskSortSize:
+		sort.SliceStable(d.Images, func(i, j int) bool {
+			return imageSizeLess(d.Images[i].SizeBytes, d.Images[j].SizeBytes)
+		})
+	case plugins.DockerDiskSortUniqueSize:
+		sort.SliceStable(d.Images, func(i, j int) bool {
+			return imageSizeLess(d.Images[i].UniqueSizeBytes, d.Images[j].UniqueSizeBytes)
+		})
+	case plugins.DockerDiskSortName:
+		sort.SliceStable(d.Images, func(i, j int) bool {
+			return d.Images[i].Repository+":"+d.Images[i].Tag < d.Images[j].Repository+":"+d.Images[j].Tag
+		})
+	}
+	if o.HostCapacity {
+		d.Storage.HostCapacity = &plugins.DockerHostCapacity{Available: false, UnavailableReason: "daemon storage filesystem could not be verified as locally accessible"}
+	}
+}
+func imageSizeLess(a, b *int64) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	return *a > *b
 }
 func hasValue(s string) bool { return strings.TrimSpace(s) != "" }
 func mapImages(rows []diskImage) []plugins.DockerDiskItem {
