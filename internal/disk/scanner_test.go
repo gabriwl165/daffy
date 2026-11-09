@@ -4,9 +4,12 @@ package disk
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -41,6 +44,96 @@ func TestScannerConfigAndMountDiscoveryErrors(t *testing.T) {
 		if _, e := (&scanner{platform: &fakePlatform{}}).Scan(context.Background(), c); e == nil {
 			t.Fatalf("invalid config accepted: %+v", c)
 		}
+	}
+}
+
+func TestPermissionIssueClassificationAndJSONSchema(t *testing.T) {
+	for _, err := range []error{fmt.Errorf("wrapped: %w", os.ErrPermission), fmt.Errorf("wrapped: %w", syscall.EPERM)} {
+		if got := classifyIssueError(err); got != IssueKindPermission {
+			t.Fatalf("classify %v: %v", err, got)
+		}
+	}
+	if got := classifyIssueError(errors.New("permission denied")); got != IssueKindOther {
+		t.Fatalf("ordinary error kind=%v", got)
+	}
+	data, err := json.Marshal(Report{Issues: []Issue{{Kind: IssueKindPermission}}, Coverage: Coverage{PermissionErrors: 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"root":"","totals":{"apparent_bytes":0,"allocated_bytes":0},"top_files":null,"top_directories":null,"mounts":null,"candidates":null,"issues":[{"operation":"","error":""}],"coverage":{"mounts":0,"scanned_mounts":0,"skipped_mounts":0,"directories":0,"files":0,"skipped_entries":0,"omitted_errors":0,"complete":false}}` {
+		t.Fatalf("unexpected JSON schema: %s", data)
+	}
+}
+
+func TestEarlyMountErrorsClassifiedAndFatal(t *testing.T) {
+	for _, cause := range []error{syscall.EACCES, syscall.EPERM} {
+		wrapped := fmt.Errorf("mount lookup: %w", cause)
+		r, err := (&scanner{platform: &fakePlatform{mountErr: wrapped}}).Scan(context.Background(), Config{})
+		if !errors.Is(err, cause) {
+			t.Fatalf("fatal error %v does not preserve %v", err, cause)
+		}
+		if r.Coverage.PermissionErrors != 1 || len(r.Issues) != 1 || r.Issues[0].Kind != IssueKindPermission {
+			t.Fatalf("cause %v report=%+v", cause, r)
+		}
+	}
+}
+
+func TestPermissionIssueAccountingBeyondReportLimit(t *testing.T) {
+	root := t.TempDir()
+	mounts := make([]Mount, MaxReportIssues+5)
+	for i := range mounts {
+		path := filepath.Join(root, fmt.Sprintf("mount-%03d", i))
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		mounts[i] = diskMount(path, fmt.Sprintf("dev-%03d", i), FilesystemExt4)
+	}
+	// Include one ordinary failure among typed permission failures.
+	platform := &capacitySequencePlatform{mounts: mounts}
+	for i := 0; i < len(mounts); i++ {
+		if i == 0 {
+			platform.errs = append(platform.errs, errors.New("permission denied"))
+		} else {
+			platform.errs = append(platform.errs, fmt.Errorf("wrapped: %w", syscall.EACCES))
+		}
+	}
+	r, err := (&scanner{platform: platform}).Scan(context.Background(), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Issues) != MaxReportIssues {
+		t.Fatalf("retained issues=%d", len(r.Issues))
+	}
+	if r.Coverage.PermissionErrors != int64(len(mounts)-1) {
+		t.Fatalf("permission failures=%d want %d", r.Coverage.PermissionErrors, len(mounts)-1)
+	}
+	if r.Coverage.OmittedErrors != 5 || r.Coverage.Complete {
+		t.Fatalf("coverage=%+v", r.Coverage)
+	}
+}
+
+type capacitySequencePlatform struct {
+	mounts []Mount
+	errs   []error
+	index  int
+}
+
+func (p *capacitySequencePlatform) Mounts() ([]Mount, error) { return p.mounts, nil }
+func (p *capacitySequencePlatform) Capacity(string) (MountCapacity, error) {
+	err := p.errs[p.index]
+	p.index++
+	return MountCapacity{}, err
+}
+
+func TestCapacityPermissionErrorClassification(t *testing.T) {
+	root := t.TempDir()
+	p := &fakePlatform{mounts: []Mount{diskMount("/", "root", FilesystemExt4)}, capacityErr: fmt.Errorf("capacity: %w", syscall.EPERM)}
+	r, err := (&scanner{platform: p}).Scan(context.Background(), Config{Path: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Coverage.PermissionErrors != 1 || len(r.Issues) != 1 || r.Issues[0].Kind != IssueKindPermission {
+		t.Fatalf("report=%+v", r)
 	}
 }
 
