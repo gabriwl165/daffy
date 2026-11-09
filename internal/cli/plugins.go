@@ -774,7 +774,7 @@ func printDockerEvidence(w io.Writer, d *plugins.DockerDetails) error {
 			}
 		}
 		if m.ObservedGrowthBytes != nil {
-			if _, err := fmt.Fprintf(w, " · growth %+s", formatSignedBytes(*m.ObservedGrowthBytes)); err != nil {
+			if _, err := fmt.Fprintf(w, " · growth %s", formatSignedBytes(*m.ObservedGrowthBytes)); err != nil {
 				return err
 			}
 		}
@@ -851,7 +851,7 @@ func printDockerEvidence(w io.Writer, d *plugins.DockerDetails) error {
 					return err
 				}
 				if cap.BytesAvailable != nil {
-					if _, err := fmt.Fprintf(w, " · %s bytes available", formatBytes(*cap.BytesAvailable)); err != nil {
+					if _, err := fmt.Fprintf(w, " · %s available", formatBytes(*cap.BytesAvailable)); err != nil {
 						return err
 					}
 				}
@@ -931,7 +931,7 @@ func formatSignedBytes(value int64) string {
 	if value < 0 {
 		return "-" + formatBytes(uint64(-(value+1))+1)
 	}
-	return formatBytes(uint64(value))
+	return "+" + formatBytes(uint64(value))
 }
 
 func printDockerObservedOutcome(w io.Writer, outcome plugins.Outcome, contextPrinted *bool, runtimeSort plugins.DockerRuntimeSort) error {
