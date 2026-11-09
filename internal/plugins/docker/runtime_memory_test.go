@@ -149,6 +149,39 @@ func TestMemoryCancellationPreservesCompletedSample(t *testing.T) {
 	}
 }
 
+func TestRejectedSampleDoesNotReplaceRuntimeOrContaminateMemory(t *testing.T) {
+	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	stats := func(id, usage, memPercent string) []byte {
+		return []byte(`{"ID":"` + id + `","Name":"svc","CPUPerc":"1%","MemUsage":"` + usage + `","MemPerc":"` + memPercent + `","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	}
+	inspect := []byte(`[{"Id":"` + a + `","HostConfig":{"Memory":20971520},"State":{"OOMKilled":false}}]`)
+	for _, tc := range []struct {
+		name   string
+		badRow []byte
+	}{
+		{"invalid percentage", append(append(stats(a, "19MiB / 20MiB", "50%"), '\n'), stats(b, "18MiB / 20MiB", "NaN%")...)},
+		{"invalid id", append(append(stats(a, "19MiB / 20MiB", "99%"), '\n'), stats("invalid-id", "18MiB / 20MiB", "50%")...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &fakeRunner{outputs: [][]byte{stats(a, "10MiB / 20MiB", "30%"), inspect, tc.badRow}}
+			o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{MemoryDetails: true, Samples: 2, Interval: 100 * time.Millisecond}})
+			if err == nil || o.Status != plugins.StatusPartial {
+				t.Fatalf("expected explicit partial failure: %+v err=%v", o, err)
+			}
+			d := o.Details.Docker
+			if len(d.Runtime) != 1 || d.Runtime[0].ID != a || d.Runtime[0].MemUsage != "10MiB / 20MiB" {
+				t.Fatalf("invalid sample replaced runtime snapshot: %+v", d.Runtime)
+			}
+			if d.RuntimeTrend == nil || d.RuntimeTrend.SampleCount != 1 || len(d.RuntimeTrend.Containers) != 1 || d.RuntimeTrend.Containers[0].PeakMemoryBytes != 10<<20 {
+				t.Fatalf("invalid sample contaminated trend: %+v", d.RuntimeTrend)
+			}
+			if len(d.Memory) != 1 || d.Memory[0].ID != a || d.Memory[0].SampleCount != 1 || d.Memory[0].PeakBytes == nil || *d.Memory[0].PeakBytes != 10<<20 || d.Memory[0].PressureSampleCount != 0 {
+				t.Fatalf("invalid sample contaminated memory: %+v", d.Memory)
+			}
+		})
+	}
+}
+
 func TestMemoryInspectHonorsContextAndSelectors(t *testing.T) {
 	id := strings.Repeat("d", 64)
 	rows := [][]byte{[]byte(`{"ID":"` + id + `","Names":"api"}`), []byte(id), []byte(`{"ID":"` + id + `","Name":"api","CPUPerc":"1%","MemUsage":"1MiB / 2MiB","MemPerc":"50%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`), []byte(`[{"Id":"` + id + `","HostConfig":{"Memory":2097152},"State":{"OOMKilled":false}}]`)}
