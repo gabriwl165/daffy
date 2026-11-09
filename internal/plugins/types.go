@@ -292,6 +292,13 @@ func (r *Registry) Run(ctx context.Context, pluginID PluginID, req Request) (Rep
 // RunWithTimeout applies an independent timeout to each operation when timeout is positive.
 // Parent cancellation and deadlines remain authoritative. A zero timeout preserves Run behavior.
 func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Request, timeout time.Duration) (Report, error) {
+	return r.RunWithTimeoutObserved(ctx, pluginID, req, timeout, nil)
+}
+
+// RunWithTimeoutObserved reports each completed operation synchronously before
+// starting the next. Observers must not modify the outcome's referenced data.
+// Collection and the final report are otherwise identical to RunWithTimeout.
+func (r *Registry) RunWithTimeoutObserved(ctx context.Context, pluginID PluginID, req Request, timeout time.Duration, observe func(Outcome)) (Report, error) {
 	var report Report
 	report.SchemaVersion = SchemaVersion
 	report.Plugin = pluginID
@@ -349,6 +356,9 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 				summary = "skipped because parent deadline expired"
 			}
 			report.Outcomes = append(report.Outcomes, Outcome{Operation: op.ID, Status: StatusCancelled, Issues: []Issue{{Code: IssueSkipped, Summary: summary}}})
+			if observe != nil {
+				observe(report.Outcomes[len(report.Outcomes)-1])
+			}
 			addFailure(err)
 			continue
 		}
@@ -414,6 +424,9 @@ func (r *Registry) RunWithTimeout(ctx context.Context, pluginID PluginID, req Re
 			outcome.Status = StatusComplete
 		}
 		report.Outcomes = append(report.Outcomes, outcome)
+		if observe != nil {
+			observe(outcome)
+		}
 	}
 	if len(report.Outcomes) > 0 {
 		report.Status = StatusComplete
