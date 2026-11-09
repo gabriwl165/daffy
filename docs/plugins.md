@@ -44,7 +44,21 @@ The bundle is a sequence of observations, not an atomic snapshot.
   Selected state fields also identify a recorded OOM kill or a stopped container
   with a nonzero exit code. Restart counts are historical observations, not proof
   of a current restart loop. Findings can include suggested next steps; Daffy
-  does not read container logs, change limits, or restart containers.
+  does not change limits or restart containers. Structured crash diagnostics
+  distinguish current restarting/unhealthy state, recorded OOM kills, nonzero
+  stopped exits, and historical restarts, with timestamps and restart policy.
+  Exit 137 alone is not proof of OOM. Stopped containers' retained health states
+  are not counted as currently unhealthy.
+
+The config API supports explicit opt-in crash investigation (`crash_investigation`
+and optional `log_tail`, 1–200 lines, default 50). This collects bounded recent
+logs, health-check output, and separate die/start/restart event counts from a
+fixed 24-hour window. Logs and health output can contain secrets; they are never
+included by default. Evidence is limited to 20 diagnostic containers, 64 KiB of
+logs per container and 1 MiB of log text overall, plus bounded health entries.
+Truncation and unavailable evidence are explicit. Docker's event retention is
+limited: history cannot prove a crash loop is absent. Investigation commands
+share the config operation's timeout. CLI flags are added in the later CLI PR.
 
 Raw inspection documents, environment variables, command arguments and raw
 command stderr are not included in reports. Container names and identifiers can

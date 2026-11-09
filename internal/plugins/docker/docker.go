@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,29 +20,30 @@ import (
 )
 
 const (
-	outputLimit             = 4 << 20
-	inspectBatch            = 50
-	commandTimeout          = 30 * time.Second
-	waitDelay               = 2 * time.Second
-	maxContainers           = 10000
-	issueDiskInvalid        = "docker_disk_invalid"
-	issueDiskUnavailable    = "docker_disk_unavailable"
-	issueRuntimeInvalid     = "docker_runtime_invalid"
-	issueRuntimeUnavailable = "docker_runtime_unavailable"
-	issueListUnavailable    = "docker_list_unavailable"
-	issueContainerLimit     = "docker_container_limit"
-	issueIDInvalid          = "docker_id_invalid"
-	issueInspectUnavailable = "docker_inspect_unavailable"
-	issueInspectInvalid     = "docker_inspect_invalid"
-	issueInspectIncomplete  = "docker_inspect_incomplete"
-	issueHostConfigUnknown  = "docker_host_config_unknown"
-	issueInspectMissing     = "docker_inspect_missing"
-	findingPrivileged       = "docker_privileged"
-	findingUnlimitedMemory  = "docker_memory_unlimited"
-	findingUnhealthy        = "docker_container_unhealthy"
-	findingContainerFailure = "docker_container_failure"
-	stateUnhealthy          = "unhealthy"
-	stateRestarting         = "restarting"
+	outputLimit                  = 4 << 20
+	inspectBatch                 = 50
+	commandTimeout               = 30 * time.Second
+	waitDelay                    = 2 * time.Second
+	maxContainers                = 10000
+	issueDiskInvalid             = "docker_disk_invalid"
+	issueDiskUnavailable         = "docker_disk_unavailable"
+	issueRuntimeInvalid          = "docker_runtime_invalid"
+	issueRuntimeUnavailable      = "docker_runtime_unavailable"
+	issueListUnavailable         = "docker_list_unavailable"
+	issueContainerLimit          = "docker_container_limit"
+	issueIDInvalid               = "docker_id_invalid"
+	issueInspectUnavailable      = "docker_inspect_unavailable"
+	issueInspectInvalid          = "docker_inspect_invalid"
+	issueInspectIncomplete       = "docker_inspect_incomplete"
+	issueHostConfigUnknown       = "docker_host_config_unknown"
+	issueInspectMissing          = "docker_inspect_missing"
+	issueCrashEvidenceIncomplete = "docker_crash_evidence_incomplete"
+	findingPrivileged            = "docker_privileged"
+	findingUnlimitedMemory       = "docker_memory_unlimited"
+	findingUnhealthy             = "docker_container_unhealthy"
+	findingContainerFailure      = "docker_container_failure"
+	stateUnhealthy               = string(plugins.DockerCrashStateUnhealthy)
+	stateRestarting              = string(plugins.DockerCrashStateRestarting)
 )
 
 var (
@@ -101,6 +103,12 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return b.buffer.Write(p)
 }
 func (r *CommandRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, false, args...)
+}
+func (r *CommandRunner) RunWithStderr(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, true, args...)
+}
+func (r *CommandRunner) run(ctx context.Context, mergeStderr bool, args ...string) ([]byte, error) {
 	if r == nil {
 		return nil, ErrUnavailable
 	}
@@ -141,6 +149,12 @@ func (r *CommandRunner) Run(ctx context.Context, args ...string) ([]byte, error)
 		}
 		return nil, ErrCommandFailed
 	}
+	if mergeStderr {
+		_, _ = out.Write(errOut.buffer.Bytes())
+		if out.exceeded {
+			return nil, ErrOutputLimit
+		}
+	}
 	return out.buffer.Bytes(), nil
 }
 
@@ -159,6 +173,11 @@ func classifyStderr(stderr string) error {
 }
 
 type Plugin struct{ runner Runner }
+type crashOptionsKey struct{}
+type crashOptions struct {
+	enabled bool
+	tail    int
+}
 
 type commandTimeoutError struct {
 	command string
@@ -178,7 +197,7 @@ func (p *Plugin) Describe() plugins.Descriptor {
 	return plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{
 		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, DiskDetails: true}},
 		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, RuntimeTrends: true}},
-		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true}},
+		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, CrashInvestigation: true}},
 	}}
 }
 
@@ -192,7 +211,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusCancelled}, err
 	}
 	trendOptions := req.Options.Samples != 0 || req.Options.Interval != 0 || req.Options.RuntimeTop != 0 || req.Options.CPUThreshold != 0 || req.Options.MemoryThreshold != 0
-	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions || req.Options.DiskDetails && req.Operation != plugins.OperationDisk {
+	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions || req.Options.DiskDetails && req.Operation != plugins.OperationDisk || req.Options.LogTail < 0 || req.Options.LogTail > 200 || req.Options.LogTail != 0 && !req.Options.CrashInvestigation || (req.Options.CrashInvestigation || req.Options.LogTail != 0) && req.Operation != plugins.OperationConfig {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	if validateTargetOptions(req.Options) != nil {
@@ -215,6 +234,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	ctx = context.WithValue(ctx, requestRunnerKey{}, scopedRunner{base: p.runner, context: req.Options.Context})
 	ctx = context.WithValue(ctx, selectorKey{}, append([]string(nil), req.Options.Containers...))
 	ctx = context.WithValue(ctx, projectKey{}, req.Options.Project)
+	ctx = context.WithValue(ctx, crashOptionsKey{}, crashOptions{enabled: req.Options.CrashInvestigation, tail: req.Options.LogTail})
 	var err error
 	switch req.Operation {
 	case plugins.OperationDisk:
@@ -262,6 +282,31 @@ func (p *Plugin) call(ctx context.Context, command string, args ...string) ([]by
 			return nil, e
 		}
 		return nil, ErrCommandFailed
+	}
+	return b, nil
+}
+func (p *Plugin) callLogs(ctx context.Context, args ...string) ([]byte, error) {
+	r := runnerFor(ctx, p.runner)
+	var b []byte
+	var e error
+	if capable, ok := r.(interface {
+		RunWithStderr(context.Context, ...string) ([]byte, error)
+	}); ok {
+		b, e = capable.RunWithStderr(ctx, args...)
+	} else {
+		b, e = r.Run(ctx, args...)
+	}
+	if e != nil {
+		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, &commandTimeoutError{command: "docker logs", err: ctx.Err()}
+			}
+			return nil, ctx.Err()
+		}
+		if errors.Is(e, context.DeadlineExceeded) {
+			return nil, &commandTimeoutError{command: "docker logs", err: e}
+		}
+		return nil, e
 	}
 	return b, nil
 }
@@ -509,10 +554,17 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 				fail(o, issueHostConfigUnknown)
 			}
 			d.Config = append(d.Config, cfg)
+			if crashErr := addCrashDiagnostic(ctx, p, d, c, cfg); crashErr != nil {
+				fail(o, issueCrashEvidenceIncomplete)
+				aggregate = errors.Join(aggregate, crashErr)
+				if ctx.Err() != nil {
+					return errors.Join(aggregate, ctx.Err())
+				}
+			}
 			if cfg.Project != "" {
 				group := composeGroup(d, cfg.Project)
 				group.Total++
-				if cfg.Health == stateUnhealthy {
+				if cfg.Health == stateUnhealthy && cfg.Status != "exited" && cfg.Status != "dead" {
 					group.Unhealthy++
 				}
 				if cfg.Status == stateRestarting {
@@ -525,7 +577,7 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 			if cfg.MemoryLimit != nil && *cfg.MemoryLimit == 0 {
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnlimitedMemory, Severity: plugins.SeverityInfo, Summary: fmt.Sprintf("Container %s (%s) has no memory limit", cfg.Name, id)})
 			}
-			if cfg.Health == stateUnhealthy || cfg.Status == stateRestarting {
+			if cfg.Health == stateUnhealthy && cfg.Status == "running" || cfg.Status == stateRestarting {
 				o.Findings = append(o.Findings, plugins.Finding{Code: findingUnhealthy, Severity: plugins.SeverityWarning, Summary: fmt.Sprintf("Container %s (%s) is unhealthy or restarting", cfg.Name, id), Recommendation: "Inspect the health check and recent logs; verify the service before restarting."})
 			}
 			if cfg.OOMKilled != nil && *cfg.OOMKilled {
@@ -547,7 +599,30 @@ func (p *Plugin) config(ctx context.Context, d *plugins.DockerDetails, o *plugin
 		}
 		return aggregate
 	}
+	sort.Slice(d.Crashes, func(i, j int) bool {
+		if d.Crashes[i].Classification != d.Crashes[j].Classification {
+			return crashPriority(d.Crashes[i].Classification) < crashPriority(d.Crashes[j].Classification)
+		}
+		return d.Crashes[i].ContainerID < d.Crashes[j].ContainerID
+	})
 	return nil
+}
+
+func crashPriority(c plugins.DockerCrashClassification) int {
+	switch c {
+	case plugins.DockerCrashCurrentRestart:
+		return 0
+	case plugins.DockerCrashRecordedOOM:
+		return 1
+	case plugins.DockerCrashUnhealthy:
+		return 2
+	case plugins.DockerCrashNonzeroExit:
+		return 3
+	case plugins.DockerCrashHistoricalRestart:
+		return 4
+	default:
+		return 5
+	}
 }
 
 func contains(values []string, value string) bool {
@@ -571,18 +646,30 @@ type inspectConfig struct {
 	Labels map[string]string `json:"Labels"`
 }
 type inspectState struct {
-	Status    string         `json:"Status"`
-	Health    *inspectHealth `json:"Health"`
-	OOMKilled *bool          `json:"OOMKilled"`
-	ExitCode  *int64         `json:"ExitCode"`
+	Status     string         `json:"Status"`
+	StartedAt  time.Time      `json:"StartedAt"`
+	FinishedAt time.Time      `json:"FinishedAt"`
+	Health     *inspectHealth `json:"Health"`
+	OOMKilled  *bool          `json:"OOMKilled"`
+	ExitCode   *int64         `json:"ExitCode"`
 }
 type inspectHealth struct {
-	Status string `json:"Status"`
+	Status string             `json:"Status"`
+	Log    []inspectHealthLog `json:"Log"`
+}
+type inspectHealthLog struct {
+	Start    time.Time `json:"Start"`
+	End      time.Time `json:"End"`
+	ExitCode int64     `json:"ExitCode"`
+	Output   string    `json:"Output"`
 }
 type inspectLogConfig struct {
 	Type string `json:"Type"`
 }
 type inspectHostConfig struct {
+	RestartPolicy struct {
+		Name string `json:"Name"`
+	} `json:"RestartPolicy"`
 	Memory         *int64           `json:"Memory"`
 	NanoCPUs       *int64           `json:"NanoCpus"`
 	PidsLimit      *int64           `json:"PidsLimit"`

@@ -21,8 +21,21 @@ type scopedRunner struct {
 }
 
 func (r scopedRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, false, args...)
+}
+func (r scopedRunner) RunWithStderr(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, true, args...)
+}
+func (r scopedRunner) run(ctx context.Context, mergeStderr bool, args ...string) ([]byte, error) {
 	if r.context != "" {
 		args = append([]string{"--context", r.context}, args...)
+	}
+	if mergeStderr {
+		if capable, ok := r.base.(interface {
+			RunWithStderr(context.Context, ...string) ([]byte, error)
+		}); ok {
+			return capable.RunWithStderr(ctx, args...)
+		}
 	}
 	return r.base.Run(ctx, args...)
 }
