@@ -34,17 +34,18 @@ const (
 	pluginFlagCPUThreshold    = "cpu-threshold"
 	pluginFlagMemoryThreshold = "memory-threshold"
 	pluginFlagDetails         = "details"
+	pluginFlagVerbose         = "verbose"
 	pluginDefaultTimeout      = 15 * time.Second
 	pluginDefaultTop          = 20
 	pluginMaximumTop          = 10000
 )
 
 const pluginUsage = `Usage: daffy plugins list [--json]
-       daffy plugins run docker [disk|runtime|config] [--details] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
+        daffy plugins run docker [disk|runtime|config] [--details] [--verbose] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
        daffy plugins run bazel [disk] --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
 
-const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--details] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
+const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--details] [--verbose] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
 `
 const bazelAliasUsage = `Usage: daffy bazel disk --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
@@ -129,6 +130,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 	var diagnostics bytes.Buffer
 	fs.SetOutput(&diagnostics)
 	asJSON := fs.Bool(pluginFlagJSON, false, "emit JSON")
+	verbose := fs.Bool(pluginFlagVerbose, false, "show full text details")
 	timeout := fs.Duration(pluginFlagTimeout, pluginDefaultTimeout, "per-operation timeout (bundle operations run sequentially)")
 	path := fs.String(pluginFlagPath, "", "explicit output or cache directory")
 	top := fs.Int(pluginFlagTop, pluginDefaultTop, "top entries")
@@ -267,7 +269,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		if e := json.NewEncoder(out).Encode(report); e != nil {
 			return failed(errOut, e)
 		}
-	} else if e := printPluginReport(out, report); e != nil {
+	} else if e := printPluginReport(out, report, *verbose); e != nil {
 		return failed(errOut, e)
 	}
 	if err != nil {
@@ -293,7 +295,10 @@ type stringsFlag []string
 func (s *stringsFlag) String() string     { return strings.Join(*s, ",") }
 func (s *stringsFlag) Set(v string) error { *s = append(*s, v); return nil }
 
-func printPluginReport(w io.Writer, r plugins.Report) error {
+func printPluginReport(w io.Writer, r plugins.Report, verbose bool) error {
+	if r.Plugin == plugins.PluginDocker && !verbose {
+		return printDockerSummary(w, r)
+	}
 	if _, e := fmt.Fprintf(w, "%s · %s\n", safe(string(r.Plugin)), safe(string(r.Status))); e != nil {
 		return e
 	}
@@ -381,6 +386,83 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 		}
 	}
 	return nil
+}
+
+func printDockerSummary(w io.Writer, r plugins.Report) error {
+	if _, err := fmt.Fprintf(w, "Docker · %s\n", safe(string(r.Status))); err != nil {
+		return err
+	}
+	contextName := ""
+	for _, outcome := range r.Outcomes {
+		if d := outcome.Details.Docker; d != nil && d.Context != "" {
+			contextName = d.Context
+			break
+		}
+	}
+	if contextName != "" {
+		if _, err := fmt.Fprintf(w, "Context: %s\n", safe(contextName)); err != nil {
+			return err
+		}
+	}
+	// Put actionable findings and collection gaps before measurements.
+	for _, outcome := range r.Outcomes {
+		for _, finding := range outcome.Findings {
+			if _, err := fmt.Fprintf(w, "[%s] %s\n", safe(string(finding.Severity)), safe(finding.Summary)); err != nil {
+				return err
+			}
+			if finding.Recommendation != "" {
+				if _, err := fmt.Fprintf(w, "  Next: %s\n", safe(finding.Recommendation)); err != nil {
+					return err
+				}
+			}
+		}
+		for _, issue := range outcome.Issues {
+			if _, err := fmt.Fprintf(w, "Collection: %s\n", safe(issue.Summary)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, outcome := range r.Outcomes {
+		d := outcome.Details.Docker
+		if d == nil {
+			continue
+		}
+		if outcome.Status != plugins.StatusComplete {
+			if _, err := fmt.Fprintf(w, "%s: %s\n", safe(string(outcome.Operation)), safe(string(outcome.Status))); err != nil {
+				return err
+			}
+		}
+		for _, row := range d.DiskUsage {
+			if _, err := fmt.Fprintf(w, "Storage · %s: %s total, %s reclaimable (%d active / %d)\n", safe(row.Category), safe(row.Size), safe(row.Reclaimable), row.Active, row.TotalCount); err != nil {
+				return err
+			}
+		}
+		for _, row := range d.Runtime {
+			if _, err := fmt.Fprintf(w, "Container %s · CPU %s · memory %s (%s)\n", safe(shortContainerID(row.ID)), safe(row.CPUPerc), safe(row.MemUsage), safe(row.MemPerc)); err != nil {
+				return err
+			}
+		}
+		for _, row := range d.Config {
+			if _, err := fmt.Fprintf(w, "Container %s · %s · %s\n", safe(shortContainerID(row.ID)), safe(row.Name), safe(row.Status)); err != nil {
+				return err
+			}
+		}
+		if d.RuntimeTrend != nil {
+			for _, row := range d.RuntimeTrend.Containers {
+				if _, err := fmt.Fprintf(w, "Peak %s · CPU %.1f%% · memory %.1f%%\n", safe(shortContainerID(row.ID)), row.PeakCPUPercent, row.PeakMemoryPercent); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func shortContainerID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 func int64Text(v *int64) string {

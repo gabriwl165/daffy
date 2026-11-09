@@ -16,7 +16,7 @@ import (
 func TestPrintPluginReportRecommendationEscaping(t *testing.T) {
 	var out bytes.Buffer
 	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationConfig, Status: plugins.StatusComplete, Findings: []plugins.Finding{{Severity: plugins.SeverityWarning, Summary: "failure", Recommendation: "safe\x1b[2J\nrecommendation"}}}}}
-	if err := printPluginReport(&out, r); err != nil {
+	if err := printPluginReport(&out, r, true); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Recommendation: safe[2Jrecommendation") || strings.Contains(out.String(), "\x1b") {
@@ -35,7 +35,7 @@ func (recommendationErrorWriter) Write(p []byte) (int, error) {
 
 func TestPrintPluginReportRecommendationWriteError(t *testing.T) {
 	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationConfig, Status: plugins.StatusComplete, Findings: []plugins.Finding{{Recommendation: "action"}}}}}
-	if err := printPluginReport(recommendationErrorWriter{}, r); err == nil || err.Error() != "writer failed" {
+	if err := printPluginReport(recommendationErrorWriter{}, r, true); err == nil || err.Error() != "writer failed" {
 		t.Fatalf("recommendation write error = %v", err)
 	}
 }
@@ -135,7 +135,7 @@ func TestRuntimeSamplingFlagsAndValidation(t *testing.T) {
 func TestRuntimeTrendTextRendering(t *testing.T) {
 	var b bytes.Buffer
 	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationRuntime, Status: plugins.StatusComplete, Details: plugins.Details{Docker: &plugins.DockerDetails{RuntimeTrend: &plugins.DockerRuntimeTrend{SampleCount: 3, Containers: []plugins.DockerRuntimeTrendItem{{ID: "safe-id", Name: "service", PeakCPUPercent: 125, PeakMemoryPercent: 50, CPUThresholdExceeded: true, MemoryThresholdExceeded: true}}}}}}}}
-	if err := printPluginReport(&b, r); err != nil {
+	if err := printPluginReport(&b, r, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Runtime peaks (3 samples)", "peak CPU 125.00% memory 50.00%", "cpu_threshold_exceeded=true memory_threshold_exceeded=true"} {
@@ -294,7 +294,7 @@ func TestPluginTypedTextDetailsAndSanitization(t *testing.T) {
 	yes, no := true, false
 	diskReport := &disk.Report{Root: "/bad\x1b[31mroot", Totals: disk.Totals{ApparentBytes: 20, AllocatedBytes: 10}, Coverage: disk.Coverage{Mounts: 2, ScannedMounts: 1, Directories: 3, Files: 4, Complete: false}}
 	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}}, outcome: plugins.Outcome{Details: plugins.Details{Docker: &plugins.DockerDetails{Context: "ctx\x1b[2J", DiskUsage: []plugins.DockerDiskUsage{{Category: "images\x1b", TotalCount: 5, Active: 2, Size: "4GB", Reclaimable: "3GB"}}, Runtime: []plugins.DockerContainerStats{{ID: "id\x1b", Name: "web\n", CPUPerc: "1%", MemUsage: "2MB", MemPerc: "3%", NetIO: "4/5", BlockIO: "6/7", PIDs: "8"}}, Config: []plugins.DockerContainerConfig{{ID: "cid", Name: "name", Status: "running", Health: "healthy", MemoryLimit: &one, NanoCPUs: &two, PIDsLimit: &one, Privileged: &yes, ReadonlyRootfs: &no, LogDriver: "json", RestartCount: 2}}}}}}
-	code, text, _ := runFake(t, p)
+	code, text, _ := runFake(t, p, "--verbose")
 	for _, s := range []string{"4GB", "CPU 1%", "memory=12", "Context: ctx", "readonly_rootfs=false"} {
 		if code != 0 || !strings.Contains(text, s) {
 			t.Fatalf("missing %q in %q", s, text)
@@ -312,6 +312,28 @@ func TestPluginTypedTextDetailsAndSanitization(t *testing.T) {
 	}
 	if strings.Contains(text, "\x1b") {
 		t.Fatalf("unsafe text %q", text)
+	}
+}
+
+func TestDockerConciseAndVerboseText(t *testing.T) {
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{
+		{Operation: plugins.OperationConfig, Status: plugins.StatusComplete, Findings: []plugins.Finding{{Severity: plugins.SeverityWarning, Summary: "memory limit missing", Recommendation: "set a limit"}}, Details: plugins.Details{Docker: &plugins.DockerDetails{Context: "dev", Config: []plugins.DockerContainerConfig{{ID: "1234567890abcdef", Name: "api"}}}}},
+		{Operation: plugins.OperationDisk, Status: plugins.StatusComplete, Details: plugins.Details{Docker: &plugins.DockerDetails{Context: "dev", DiskUsage: []plugins.DockerDiskUsage{{Category: "images", Size: "4GB", Reclaimable: "2GB", Active: 1, TotalCount: 3}}, DiskBreakdown: []plugins.DockerDiskBreakdown{{Category: "images", Items: []plugins.DockerDiskItem{{ID: "full-detail"}}}}}}},
+	}}
+	var concise bytes.Buffer
+	if err := printPluginReport(&concise, r, false); err != nil {
+		t.Fatal(err)
+	}
+	text := concise.String()
+	if strings.Count(text, "Context:") != 1 || !strings.Contains(text, "1234567890ab") || strings.Contains(text, "1234567890abcdef") || !strings.Contains(text, "Storage · images") || strings.Index(text, "memory limit missing") > strings.Index(text, "Storage · images") {
+		t.Fatalf("concise output: %q", text)
+	}
+	var full bytes.Buffer
+	if err := printPluginReport(&full, r, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(full.String(), "full-detail") || !strings.Contains(full.String(), "Context: dev") {
+		t.Fatalf("verbose output omitted legacy detail: %q", full.String())
 	}
 }
 
