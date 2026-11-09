@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -16,28 +17,33 @@ import (
 )
 
 const (
-	pluginCommand        = "plugins"
-	pluginListCommand    = "list"
-	pluginRunCommand     = "run"
-	pluginFlagJSON       = "json"
-	pluginFlagTimeout    = "timeout"
-	pluginFlagPath       = "path"
-	pluginFlagTop        = "top"
-	pluginFlagExclude    = "exclude"
-	pluginFlagContext    = "context"
-	pluginFlagContainer  = "container"
-	pluginFlagProject    = "project"
-	pluginDefaultTimeout = 15 * time.Second
-	pluginDefaultTop     = 20
-	pluginMaximumTop     = 10000
+	pluginCommand             = "plugins"
+	pluginListCommand         = "list"
+	pluginRunCommand          = "run"
+	pluginFlagJSON            = "json"
+	pluginFlagTimeout         = "timeout"
+	pluginFlagPath            = "path"
+	pluginFlagTop             = "top"
+	pluginFlagExclude         = "exclude"
+	pluginFlagContext         = "context"
+	pluginFlagContainer       = "container"
+	pluginFlagProject         = "project"
+	pluginFlagSamples         = "samples"
+	pluginFlagInterval        = "interval"
+	pluginFlagRuntimeTop      = "runtime-top"
+	pluginFlagCPUThreshold    = "cpu-threshold"
+	pluginFlagMemoryThreshold = "memory-threshold"
+	pluginDefaultTimeout      = 15 * time.Second
+	pluginDefaultTop          = 20
+	pluginMaximumTop          = 10000
 )
 
 const pluginUsage = `Usage: daffy plugins list [--json]
-       daffy plugins run docker [disk|runtime|config] [--json] [--timeout duration]
+       daffy plugins run docker [disk|runtime|config] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
        daffy plugins run bazel [disk] --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
 
-const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--json] [--timeout duration]
+const dockerAliasUsage = `Usage: daffy docker [disk|runtime|config] [--samples N] [--interval duration] [--runtime-top N] [--cpu-threshold percent] [--memory-threshold percent] [--json] [--timeout duration]
 `
 const bazelAliasUsage = `Usage: daffy bazel disk --path PATH [--exclude PATH ...] [--top N] [--json] [--timeout duration]
 `
@@ -125,6 +131,11 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 	timeout := fs.Duration(pluginFlagTimeout, pluginDefaultTimeout, "per-operation timeout (bundle operations run sequentially)")
 	path := fs.String(pluginFlagPath, "", "explicit output or cache directory")
 	top := fs.Int(pluginFlagTop, pluginDefaultTop, "top entries")
+	samples := fs.Int(pluginFlagSamples, 1, "runtime samples (1-60)")
+	interval := fs.Duration(pluginFlagInterval, 500*time.Millisecond, "runtime sample interval (100ms-1m)")
+	runtimeTop := fs.Int(pluginFlagRuntimeTop, 0, "number of ranked runtime containers")
+	cpuThreshold := fs.Float64(pluginFlagCPUThreshold, 0, "CPU peak percentage threshold")
+	memoryThreshold := fs.Float64(pluginFlagMemoryThreshold, 0, "memory peak percentage threshold")
 	var excludes stringsFlag
 	fs.Var(&excludes, pluginFlagExclude, "exclude path (repeatable)")
 	var containers stringsFlag
@@ -148,7 +159,7 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		fmt.Fprintf(errOut, "unexpected arguments: %s\n", safe(strings.Join(fs.Args(), " ")))
 		return int(exitUsage)
 	}
-	var specified struct{ Path, Top, Exclude, Context, Container, Project bool }
+	var specified struct{ Path, Top, Exclude, Context, Container, Project, Samples, Interval, RuntimeTop, CPU, Memory bool }
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case pluginFlagPath:
@@ -163,6 +174,16 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 			specified.Container = true
 		case pluginFlagProject:
 			specified.Project = true
+		case pluginFlagSamples:
+			specified.Samples = true
+		case pluginFlagInterval:
+			specified.Interval = true
+		case pluginFlagRuntimeTop:
+			specified.RuntimeTop = true
+		case pluginFlagCPUThreshold:
+			specified.CPU = true
+		case pluginFlagMemoryThreshold:
+			specified.Memory = true
 		}
 	})
 	if *timeout <= 0 {
@@ -200,13 +221,18 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 		return int(exitUsage)
 	}
 	for _, op := range selected {
-		if specified.Path && !op.Options.Path || specified.Exclude && !op.Options.Excludes || specified.Top && !op.Options.TopN || specified.Context && id != plugins.PluginDocker || specified.Container && (id != plugins.PluginDocker || op.ID == plugins.OperationDisk) || specified.Project && (id != plugins.PluginDocker || op.ID == plugins.OperationDisk) || op.Options.RequirePath && *path == "" {
+		trendSpecified := specified.Samples || specified.Interval || specified.RuntimeTop || specified.CPU || specified.Memory
+		if specified.Path && !op.Options.Path || specified.Exclude && !op.Options.Excludes || specified.Top && !op.Options.TopN || specified.Context && (id != plugins.PluginDocker || !op.Options.Context) || specified.Container && (id != plugins.PluginDocker || !op.Options.Containers || op.ID == plugins.OperationDisk) || specified.Project && (id != plugins.PluginDocker || !op.Options.Project || op.ID == plugins.OperationDisk) || trendSpecified && !op.Options.RuntimeTrends || op.Options.RequirePath && *path == "" {
 			fmt.Fprintf(errOut, "invalid or unsupported options for %q\n", safe(string(op.ID)))
 			return int(exitUsage)
 		}
 	}
 	if *top < 0 || *top > pluginMaximumTop {
 		fmt.Fprintf(errOut, "top must be between 0 and %d\n", pluginMaximumTop)
+		return int(exitUsage)
+	}
+	if *samples < 1 || *samples > 60 || *interval < 100*time.Millisecond || *interval > time.Minute || *runtimeTop < 0 || *runtimeTop > 100 || math.IsNaN(*cpuThreshold) || math.IsInf(*cpuThreshold, 0) || *cpuThreshold < 0 || math.IsNaN(*memoryThreshold) || math.IsInf(*memoryThreshold, 0) || *memoryThreshold < 0 || *memoryThreshold > 100 {
+		fmt.Fprintln(errOut, "invalid runtime sampling options")
 		return int(exitUsage)
 	}
 	report, err := r.RunWithTimeout(ctx, id, plugins.Request{Operation: operation, Options: plugins.Options{Path: *path, Excludes: excludes, TopN: func() int {
@@ -216,7 +242,17 @@ func runPlugin(ctx context.Context, args []string, out, errOut io.Writer, r *plu
 			}
 		}
 		return 0
-	}(), Context: *contextName, Containers: containers, Project: *projectName}}, *timeout)
+	}(), Context: *contextName, Containers: containers, Project: *projectName, Samples: func() int {
+		if specified.Samples || specified.Interval || specified.RuntimeTop || specified.CPU || specified.Memory {
+			return *samples
+		}
+		return 0
+	}(), Interval: func() time.Duration {
+		if specified.Samples || specified.Interval || specified.RuntimeTop || specified.CPU || specified.Memory {
+			return *interval
+		}
+		return 0
+	}(), RuntimeTop: *runtimeTop, CPUThreshold: *cpuThreshold, MemoryThreshold: *memoryThreshold}}, *timeout)
 	if err != nil && (errors.Is(err, plugins.ErrInvalid) || errors.Is(err, plugins.ErrUnknownPlugin) || errors.Is(err, plugins.ErrUnknownOperation)) {
 		if _, werr := fmt.Fprintf(errOut, "%s\n", safe(err.Error())); werr != nil {
 			return int(exitFailure)
@@ -290,6 +326,16 @@ func printPluginReport(w io.Writer, r plugins.Report) error {
 			for _, v := range d.Runtime {
 				if _, e := fmt.Fprintf(w, "  %s %s CPU %s memory %s (%s), network %s, block %s, PIDs %s\n", safe(v.ID), safe(v.Name), safe(v.CPUPerc), safe(v.MemUsage), safe(v.MemPerc), safe(v.NetIO), safe(v.BlockIO), safe(v.PIDs)); e != nil {
 					return e
+				}
+			}
+			if d.RuntimeTrend != nil {
+				if _, e := fmt.Fprintf(w, "  Runtime peaks (%d samples):\n", d.RuntimeTrend.SampleCount); e != nil {
+					return e
+				}
+				for _, v := range d.RuntimeTrend.Containers {
+					if _, e := fmt.Fprintf(w, "    %s %s peak CPU %.2f%% memory %.2f%% cpu_threshold_exceeded=%t memory_threshold_exceeded=%t\n", safe(v.ID), safe(v.Name), v.PeakCPUPercent, v.PeakMemoryPercent, v.CPUThresholdExceeded, v.MemoryThresholdExceeded); e != nil {
+						return e
+					}
 				}
 			}
 			for _, v := range d.Config {

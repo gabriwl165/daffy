@@ -177,7 +177,7 @@ func New(r Runner) *Plugin {
 func (p *Plugin) Describe() plugins.Descriptor {
 	return plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{
 		{ID: plugins.OperationDisk, Summary: "Docker disk usage", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true}},
-		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true}},
+		{ID: plugins.OperationRuntime, Summary: "Docker container runtime", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true, RuntimeTrends: true}},
 		{ID: plugins.OperationConfig, Summary: "Docker container configuration", Default: true, Access: plugins.AccessDaemonRead, Options: plugins.SupportedOptions{Context: true, Containers: true, Project: true}},
 	}}
 }
@@ -191,7 +191,8 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	if err := ctx.Err(); err != nil {
 		return plugins.Outcome{Operation: req.Operation, Status: plugins.StatusCancelled}, err
 	}
-	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 {
+	trendOptions := req.Options.Samples != 0 || req.Options.Interval != 0 || req.Options.RuntimeTop != 0 || req.Options.CPUThreshold != 0 || req.Options.MemoryThreshold != 0
+	if req.Options.Path != "" || len(req.Options.Excludes) != 0 || req.Options.TopN != 0 || req.Operation != plugins.OperationRuntime && trendOptions {
 		return plugins.Outcome{}, plugins.ErrInvalid
 	}
 	if validateTargetOptions(req.Options) != nil {
@@ -219,7 +220,7 @@ func (p *Plugin) Analyze(ctx context.Context, req plugins.Request) (plugins.Outc
 	case plugins.OperationDisk:
 		err = p.disk(ctx, d, &o)
 	case plugins.OperationRuntime:
-		err = p.runtime(ctx, d, &o)
+		err = p.runtimeSamples(ctx, req.Options, d, &o)
 	case plugins.OperationConfig:
 		err = p.config(ctx, d, &o)
 	}

@@ -88,11 +88,11 @@ func runFake(t *testing.T, p *fakePlugin, args ...string) (int, string, string) 
 }
 
 func TestDockerTargetFlagsReachPluginsRunAndAlias(t *testing.T) {
-	for _, args := range [][]string{{"plugins", "run", "docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop"}, {"docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop"}} {
-		p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationRuntime, true, plugins.SupportedOptions{Context: true, Containers: true, Project: true})}}}
+	for _, args := range [][]string{{"plugins", "run", "docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop", "--samples", "2", "--interval", "100ms"}, {"docker", "runtime", "--context", "local-dev", "--container", "api", "--container", "worker", "--project", "shop", "--samples", "2", "--interval", "100ms"}} {
+		p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationRuntime, true, plugins.SupportedOptions{Context: true, Containers: true, Project: true, RuntimeTrends: true})}}}
 		var out, errOut bytes.Buffer
 		code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errOut, Deps: Deps{Plugins: fakeRegistry(t, p)}})
-		if code != 0 || len(p.calls) != 1 || p.calls[0].Options.Context != "local-dev" || strings.Join(p.calls[0].Options.Containers, ",") != "api,worker" || p.calls[0].Options.Project != "shop" {
+		if code != 0 || len(p.calls) != 1 || p.calls[0].Options.Context != "local-dev" || strings.Join(p.calls[0].Options.Containers, ",") != "api,worker" || p.calls[0].Options.Project != "shop" || p.calls[0].Options.Samples != 2 || p.calls[0].Options.Interval != 100*time.Millisecond {
 			t.Fatalf("args=%v code=%d request=%#v err=%s", args, code, p.calls, errOut.String())
 		}
 	}
@@ -105,6 +105,42 @@ func TestDockerContainerFlagRejectedForDiskAndBundle(t *testing.T) {
 		code := Run(context.Background(), RunConfig{Args: args, Out: &out, ErrOut: &errOut, Deps: Deps{Plugins: fakeRegistry(t, p)}})
 		if code == 0 || len(p.calls) != 0 {
 			t.Fatalf("accepted %v code=%d calls=%v", args, code, p.calls)
+		}
+	}
+}
+
+func TestRuntimeSamplingFlagsAndValidation(t *testing.T) {
+	var got plugins.Request
+	p := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginDocker, Operations: []plugins.Operation{op(plugins.OperationRuntime, true, plugins.SupportedOptions{RuntimeTrends: true}), op(plugins.OperationDisk, false, plugins.SupportedOptions{}), op(plugins.OperationConfig, false, plugins.SupportedOptions{})}}, analyze: func(_ context.Context, r plugins.Request) (plugins.Outcome, error) {
+		got = r
+		return plugins.Outcome{Status: plugins.StatusComplete}, nil
+	}}
+	code, _, err := runFake(t, p, "runtime", "--samples=2", "--interval=100ms", "--runtime-top=3", "--cpu-threshold=125", "--memory-threshold=75")
+	if code != 0 || err != "" || got.Options.Samples != 2 || got.Options.Interval != 100*time.Millisecond || got.Options.RuntimeTop != 3 || got.Options.CPUThreshold != 125 || got.Options.MemoryThreshold != 75 {
+		t.Fatalf("flags code=%d err=%q req=%#v", code, err, got)
+	}
+	for _, args := range [][]string{{"disk", "--samples=2"}, {"config", "--cpu-threshold=10"}, {"--samples=61"}, {"--interval=50ms"}, {"--cpu-threshold=NaN"}, {"--memory-threshold=101"}} {
+		code, _, _ = runFake(t, p, args...)
+		if code == 0 {
+			t.Errorf("accepted %v", args)
+		}
+	}
+	wrong := &fakePlugin{descriptor: plugins.Descriptor{ID: plugins.PluginBazel, Operations: []plugins.Operation{op(plugins.OperationDisk, true, plugins.SupportedOptions{})}}}
+	code, _, _ = runFake(t, wrong, "--samples=2")
+	if code == 0 {
+		t.Fatal("accepted runtime flag on other plugin")
+	}
+}
+
+func TestRuntimeTrendTextRendering(t *testing.T) {
+	var b bytes.Buffer
+	r := plugins.Report{Plugin: plugins.PluginDocker, Status: plugins.StatusComplete, Outcomes: []plugins.Outcome{{Operation: plugins.OperationRuntime, Status: plugins.StatusComplete, Details: plugins.Details{Docker: &plugins.DockerDetails{RuntimeTrend: &plugins.DockerRuntimeTrend{SampleCount: 3, Containers: []plugins.DockerRuntimeTrendItem{{ID: "safe-id", Name: "service", PeakCPUPercent: 125, PeakMemoryPercent: 50, CPUThresholdExceeded: true, MemoryThresholdExceeded: true}}}}}}}}
+	if err := printPluginReport(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Runtime peaks (3 samples)", "peak CPU 125.00% memory 50.00%", "cpu_threshold_exceeded=true memory_threshold_exceeded=true"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in %s", want, b.String())
 		}
 	}
 }

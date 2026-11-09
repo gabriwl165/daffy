@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -98,6 +99,129 @@ func TestComposeProjectGroupingAndFiltering(t *testing.T) {
 	b, _ := json.Marshal(o)
 	if strings.Contains(string(b), "must-not-leak") {
 		t.Fatal("raw labels leaked")
+	}
+}
+
+func TestRuntimeSamplesRankPeaksAndKeepChurn(t *testing.T) {
+	id1 := strings.Repeat("a", 64)
+	id2 := strings.Repeat("b", 64)
+	row := func(id, cpu string) []byte {
+		return []byte(`{"ID":"` + id + `","Name":"web","CPUPerc":"` + cpu + `%","MemUsage":"1MiB / 2MiB","MemPerc":"50%","NetIO":"1kB / 2kB","BlockIO":"0B / 0B","PIDs":"1"}`)
+	}
+	r := &fakeRunner{outputs: [][]byte{row(id1, "125"), row(id2, "150")}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 2, Interval: 100 * time.Millisecond, RuntimeTop: 1, CPUThreshold: 120, MemoryThreshold: 50}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trend := o.Details.Docker.RuntimeTrend
+	if trend == nil || trend.SampleCount != 2 || len(trend.Containers) != 1 || trend.Containers[0].ID != id2 || !trend.Containers[0].CPUThresholdExceeded {
+		t.Fatalf("trend: %#v", trend)
+	}
+}
+
+func TestInvalidRuntimeSampleDoesNotContaminatePeaks(t *testing.T) {
+	a := strings.Repeat("a", 64)
+	b := strings.Repeat("b", 64)
+	row := func(id, cpu, memory string) string {
+		return `{"ID":"` + id + `","Name":"container","CPUPerc":"` + cpu + `","MemUsage":"1/2","MemPerc":"` + memory + `","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`
+	}
+	r := &fakeRunner{outputs: [][]byte{
+		[]byte(row(a, "10%", "20%")),
+		[]byte(row(a, "99%", "30%") + "\n" + row(b, "5%", "NaN%")),
+	}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 2, Interval: 100 * time.Millisecond}})
+	if err == nil || o.Details.Docker.RuntimeTrend == nil || o.Details.Docker.RuntimeTrend.SampleCount != 1 {
+		t.Fatalf("expected one completed sample: %#v %v", o, err)
+	}
+	trend := o.Details.Docker.RuntimeTrend.Containers
+	if len(trend) != 1 || trend[0].ID != a || trend[0].PeakCPUPercent != 10 {
+		t.Fatalf("invalid sample contaminated peak data: %#v", trend)
+	}
+}
+
+func TestRuntimeSamplingPreservesContextAndContainerTarget(t *testing.T) {
+	id := strings.Repeat("a", 64)
+	listed := []byte(`{"ID":"` + id + `","Names":"api"}`)
+	stats := []byte(`{"ID":"` + id + `","Name":"api","CPUPerc":"12%","MemUsage":"1/2","MemPerc":"20%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	r := &fakeRunner{outputs: [][]byte{listed, []byte(id + "\n"), stats, listed, []byte(id + "\n"), stats}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Context: "dev", Containers: []string{"api"}, Samples: 2, Interval: 100 * time.Millisecond}})
+	if err != nil || o.Details.Docker.RuntimeTrend == nil || o.Details.Docker.RuntimeTrend.SampleCount != 2 || len(o.Details.Docker.Runtime) != 1 || o.Details.Docker.Runtime[0].ID != id {
+		t.Fatalf("targeted trend: %#v %v", o, err)
+	}
+	for i, args := range r.args {
+		if !containsArg(args, "--context") || !containsArg(args, "dev") {
+			t.Errorf("call %d lost context: %v", i, args)
+		}
+		if i%3 == 2 && (!containsArg(args, "--") || !containsArg(args, id)) {
+			t.Errorf("stats call %d became unqualified: %v", i, args)
+		}
+	}
+}
+
+func TestRuntimeSamplingProjectNoMatchesStaysEmpty(t *testing.T) {
+	r := &fakeRunner{outputs: [][]byte{[]byte(""), []byte(""), []byte(""), []byte("")}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Project: "missing", Samples: 2, Interval: 100 * time.Millisecond}})
+	if err != nil || len(o.Details.Docker.Runtime) != 0 || o.Details.Docker.Runtime == nil || o.Details.Docker.RuntimeTrend == nil || o.Details.Docker.RuntimeTrend.SampleCount != 2 {
+		t.Fatalf("no-match project: %#v %v", o, err)
+	}
+	for _, args := range r.args {
+		if containsArg(args, "stats") {
+			t.Fatalf("unexpected unqualified stats call: %v", args)
+		}
+	}
+}
+
+func TestRuntimeTrendTieOrderIsDeterministic(t *testing.T) {
+	ids := []string{strings.Repeat("b", 64), strings.Repeat("a", 64)}
+	row := func(id string) []byte {
+		return []byte(`{"ID":"` + id + `","Name":"n","CPUPerc":"5%","MemUsage":"1/2","MemPerc":"10%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	}
+	r := &fakeRunner{outputs: [][]byte{row(ids[0]), row(ids[1])}}
+	o, err := New(r).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 2, Interval: 100 * time.Millisecond}})
+	if err != nil || o.Details.Docker.RuntimeTrend.Containers[0].ID != ids[1] {
+		t.Fatalf("tie order: %#v %v", o, err)
+	}
+}
+
+func TestRuntimeSampleBoundsNonfiniteAndDefault(t *testing.T) {
+	for _, opts := range []plugins.Options{{Samples: 61}, {Samples: 2, Interval: time.Millisecond}, {Interval: time.Minute + 1}, {RuntimeTop: 101}, {CPUThreshold: math.NaN()}, {CPUThreshold: math.Inf(1)}, {MemoryThreshold: 101}} {
+		if _, err := New(&fakeRunner{}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: opts}); !errors.Is(err, plugins.ErrInvalid) {
+			t.Errorf("opts %#v: %v", opts, err)
+		}
+	}
+	id := strings.Repeat("a", 64)
+	row := func(cpu string) []byte {
+		return []byte(`{"ID":"` + id + `","Name":"x","CPUPerc":"` + cpu + `","MemUsage":"1/2","MemPerc":"20%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	}
+	for _, cpu := range []string{"NaN%", "+Inf%", "-Inf%"} {
+		_, err := New(&fakeRunner{outputs: [][]byte{row(cpu)}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 1}})
+		if err == nil {
+			t.Errorf("accepted %q", cpu)
+		}
+	}
+	got, err := New(&fakeRunner{outputs: [][]byte{row("125%")}}).Analyze(context.Background(), plugins.Request{Operation: plugins.OperationRuntime})
+	if err != nil || got.Details.Docker.RuntimeTrend != nil {
+		t.Fatalf("default snapshot changed: %#v %v", got, err)
+	}
+}
+
+func TestRuntimeTrendCancellationKeepsCompletedSamples(t *testing.T) {
+	id := strings.Repeat("c", 64)
+	line := []byte(`{"ID":"` + id + `","Name":"x","CPUPerc":"125%","MemUsage":"1/2","MemPerc":"20%","NetIO":"0/0","BlockIO":"0/0","PIDs":"1"}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	r := runnerFunc(func(ctx context.Context, _ ...string) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return line, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	go func() { time.Sleep(15 * time.Millisecond); cancel() }()
+	out, err := New(r).Analyze(ctx, plugins.Request{Operation: plugins.OperationRuntime, Options: plugins.Options{Samples: 3, Interval: 100 * time.Millisecond}})
+	if !errors.Is(err, context.Canceled) || out.Details.Docker.RuntimeTrend == nil || out.Details.Docker.RuntimeTrend.SampleCount != 1 {
+		t.Fatalf("partial trend: %#v %v", out, err)
 	}
 }
 func containsArg(args []string, want string) bool {
