@@ -9,6 +9,7 @@ runs cleanup commands.
 ```sh
 daffy disk "$HOME" --progress
 daffy disk /var --top 10 --time-budget 30s
+daffy disk /var --verbose
 daffy disk "$HOME" --json --progress > disk-report.json
 ```
 
@@ -56,19 +57,30 @@ I/O errors can make the report partial.
 
 Protected directories such as `/var/tmp/systemd-private-*` may be inaccessible
 to your user. The scan continues, but unreadable contents are not counted.
-Choose the scope you actually need:
+Default text output summarizes permission failures once under coverage rather
+than listing every inaccessible path. Use `--verbose` to show retained details:
 
 ```sh
-daffy disk "$HOME"                 # Scan your own files
-daffy disk --exclude /var/tmp      # Deliberately omit this entire tree
-sudo daffy disk                    # Linux: explicitly request wider read access
+daffy disk /var
+daffy disk /var --verbose
 ```
 
-Exclusions leave those contents outside the report; they do not recover missing
-usage. Individual systemd-private directory names can change after service
-restarts. Use elevated access only when authorized and with a trusted executable.
-It can expose private paths and may still encounter security-policy or namespace
-restrictions. Daffy never elevates itself.
+The summary counts permission-failure events, not unique paths, including
+failures beyond the retained issue limit. Verbose output reports how many
+permission details are retained; it cannot recover omitted details. Both modes
+preserve partial coverage and leave unexpected I/O errors visible in retained
+scan issues. A fatal failure that prevents the scan from starting still produces
+an error and a nonzero exit status.
+
+`--verbose` changes text presentation only. JSON output keeps the same schema,
+retained issues, and omitted-error counters, whether or not the flag is supplied.
+Permission classification uses typed operating-system errors, not message text.
+No additional filesystem walk is needed: recording each failure adds constant
+work and the aggregate count uses O(1) state; rendering is O(I) for retained issues.
+
+Select a narrower path or use `--exclude PATH` only to deliberately change the
+scope. Exclusions do not recover missing usage. Individual systemd-private
+directory names can change after service restarts. Daffy never elevates itself.
 
 Installing a root-owned binary system-wide (for example in `/usr/local/bin`)
 does not grant runtime access: it still runs with the invoking user's permissions.
