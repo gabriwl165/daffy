@@ -52,6 +52,28 @@ followed and file contents are not read. Run with ordinary user permissions;
 Daffy never invokes `sudo`. Permission failures, disappearing files, and other
 I/O errors can make the report partial.
 
+### Permission denied
+
+Protected directories such as `/var/tmp/systemd-private-*` may be inaccessible
+to your user. The scan continues, but unreadable contents are not counted.
+Choose the scope you actually need:
+
+```sh
+daffy disk "$HOME"                 # Scan your own files
+daffy disk --exclude /var/tmp      # Deliberately omit this entire tree
+sudo daffy disk                    # Linux: explicitly request wider read access
+```
+
+Exclusions leave those contents outside the report; they do not recover missing
+usage. Individual systemd-private directory names can change after service
+restarts. Use elevated access only when authorized and with a trusted executable.
+It can expose private paths and may still encounter security-policy or namespace
+restrictions. Daffy never elevates itself.
+
+Installing a root-owned binary system-wide (for example in `/usr/local/bin`)
+does not grant runtime access: it still runs with the invoking user's permissions.
+Do not use setuid or change protected directory permissions to silence these errors.
+
 `coverage.complete` means the selected, policy-eligible traversal finished without
 observed I/O failures or interruption. It does not mean every host path was read:
 intentional mount skips and configured exclusions remain outside coverage.
