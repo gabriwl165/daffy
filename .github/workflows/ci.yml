@@ -58,12 +58,16 @@ jobs:
           go build -o "$work/daffy" ./cmd/daffy
           "$work/daffy" scan --json > "$work/health.json"
           "$work/daffy" doctor --json > "$work/doctor.json"
+          "$work/daffy" optimize --json > "$work/optimize.json"
           "$work/daffy" disk "$work/scope" --json > "$work/disk.json"
           python3 - "$work" <<'PY'
           import json, pathlib, sys
           work = pathlib.Path(sys.argv[1])
           health = json.loads((work / 'health.json').read_text())
           disk = json.loads((work / 'disk.json').read_text())
+          plan = json.loads((work / 'optimize.json').read_text())
+          assert plan['read_only'] is True and plan['collected_at']
+          assert plan['capabilities']['history']['status'] == 'unsupported'
           assert health['collected_at'] and health['findings']
           assert disk['coverage']['complete'] and disk['coverage']['files'] == 1
           PY
@@ -92,12 +96,16 @@ jobs:
           go build -o "$work/daffy" ./cmd/daffy
           "$work/daffy" scan --json > "$work/health.json"
           "$work/daffy" doctor --json > "$work/doctor.json"
+          "$work/daffy" optimize --json > "$work/optimize.json"
           "$work/daffy" disk "$work/scope" --json > "$work/disk.json"
           python3 - "$work" <<'PY'
           import json, pathlib, sys
           work = pathlib.Path(sys.argv[1])
           health = json.loads((work / 'health.json').read_text())
           disk = json.loads((work / 'disk.json').read_text())
+          plan = json.loads((work / 'optimize.json').read_text())
+          assert plan['read_only'] is True and plan['collected_at']
+          assert plan['capabilities']['history']['status'] == 'unsupported'
           assert health['collected_at'] and health['findings']
           assert disk['coverage']['complete'] and disk['coverage']['files'] == 1
           PY
