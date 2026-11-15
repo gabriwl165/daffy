@@ -82,6 +82,8 @@ daffy watch --interval 5s          # Repeated, interruptible observations
 daffy report --json                # One JSON report on stdout
 daffy watch --json                 # One JSON report per line (NDJSON)
 daffy doctor                       # Capabilities, tools, and permissions
+daffy optimize                     # Prioritized, read-only optimization recommendations
+daffy optimize --json              # Structured plan; no actions are executed
 daffy disk                         # Linux: space hotspots across eligible local mounts
 daffy disk /home --format json     # Narrow the scope; flags may follow the path
 daffy docker                       # Docker's default diagnostic bundle
@@ -108,6 +110,12 @@ behavior, safety checks, and remaining PID-reuse race limitations.
 Completed scans exit 0 even when they contain critical findings: this is a
 diagnostic tool, not a pass/fail health gate. Execution failures exit 1; invalid
 usage exits 2. Interrupted commands exit 130.
+
+`optimize` explains warning and critical observations with source evidence and
+suggested next steps. It does not clean storage, stop applications, change
+settings, or save history. Missing observations remain unavailable; no
+recommendations is not a clean bill of health. See [optimization guidelines and
+follow-up implementation plan](docs/optimization.md).
 
 Use `daffy docker` and `daffy bazel` directly; no `plugins run` prefix is needed.
 Use `daffy plugins list` to discover available analyses. See

@@ -27,6 +27,7 @@ const usage = `daffy — read-only system diagnostics (except explicit process c
 
 Usage: daffy [scan] [options]
        daffy report --json [options]
+       daffy optimize [--json] [--sample duration] [--timeout duration]
        daffy watch [options]
        daffy doctor [options]
        daffy disk scan [path] [options]
@@ -36,7 +37,7 @@ Usage: daffy [scan] [options]
        daffy plugins list|run ...
        daffy kill pid N | kill port N
 
-Commands: scan (default), watch, report, doctor, disk, docker, bazel, plugins, kill
+Commands: scan (default), watch, report, optimize, doctor, disk, docker, bazel, plugins, kill
 Options: --sample duration --timeout duration --include-sensitive --privileged
          --json (scan/report; watch emits NDJSON) --interval duration (watch)
 Exit codes: 0 completed (findings do not fail), 1 execution failure, 2 usage error.
@@ -62,14 +63,15 @@ type RunConfig struct {
 type command string
 
 const (
-	commandScan   command = "scan"
-	commandWatch  command = "watch"
-	commandReport command = "report"
-	commandDoctor command = "doctor"
-	commandDisk   command = "disk"
-	commandDocker command = "docker"
-	commandBazel  command = "bazel"
-	commandKill   command = "kill"
+	commandScan     command = "scan"
+	commandWatch    command = "watch"
+	commandReport   command = "report"
+	commandDoctor   command = "doctor"
+	commandOptimize command = "optimize"
+	commandDisk     command = "disk"
+	commandDocker   command = "docker"
+	commandBazel    command = "bazel"
+	commandKill     command = "kill"
 )
 
 type exitCode int
@@ -118,6 +120,9 @@ func Run(ctx context.Context, rc RunConfig) int {
 	}
 	if len(args) > 0 && command(args[0]) == commandKill {
 		return runKill(ctx, args[1:], out, errOut, deps.Process)
+	}
+	if len(args) > 0 && command(args[0]) == commandOptimize {
+		return runOptimize(ctx, args[1:], out, errOut, deps)
 	}
 	if len(args) > 0 && args[0] == "--version" {
 		fmt.Fprintln(out, "daffy", buildVersion)
