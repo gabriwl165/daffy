@@ -18,16 +18,17 @@ type diskFormat string
 const (
 	diskFormatText diskFormat = "text"
 	diskFormatJSON diskFormat = "json"
-	diskUsage                 = `Usage: daffy disk [scan] [path] [--format text|json] [--json] [--progress] [--exclude PATH]... [--time-budget duration] [--top N]
+	diskUsage                 = `Usage: daffy disk [scan] [path] [--format text|json] [--json] [--progress] [--verbose] [--exclude PATH]... [--time-budget duration] [--top N]
 Scans eligible local mounts by default. Time budget defaults to 0 (no limit).
-Use --progress for occasional status on stderr. Recommendations describe observed
-data; they do not guarantee reclaimable space.`
+Use --progress for occasional status on stderr; --verbose shows permission issue details.
+Recommendations describe observed data; they do not guarantee reclaimable space.`
 	optionDiskFormat   = "format"
 	optionDiskJSON     = "json"
 	optionDiskExclude  = "exclude"
 	optionDiskBudget   = "time-budget"
 	optionDiskTop      = "top"
 	optionDiskProgress = "progress"
+	optionDiskVerbose  = "verbose"
 )
 
 type diskOptions struct {
@@ -36,6 +37,7 @@ type diskOptions struct {
 	budget   time.Duration
 	top      int
 	progress bool
+	verbose  bool
 }
 
 // diskFlags accepts options interspersed with the optional positional root.
@@ -64,6 +66,11 @@ func diskFlags(args []string) ([]string, diskOptions, error) {
 			return args[i], nil
 		}
 		switch key {
+		case optionDiskVerbose:
+			if has {
+				return nil, c, fmt.Errorf("--verbose does not accept a value")
+			}
+			c.verbose = true
 		case optionDiskProgress:
 			if has {
 				return nil, c, fmt.Errorf("--progress does not accept a value")
@@ -174,7 +181,7 @@ func runDisk(ctx context.Context, args []string, out, errOut io.Writer, deps Dep
 		if x := json.NewEncoder(out).Encode(r); x != nil {
 			return failed(errOut, x)
 		}
-	} else if x := printDisk(out, r); x != nil {
+	} else if x := printDiskOptions(out, r, o.verbose); x != nil {
 		return failed(errOut, x)
 	}
 	if e != nil {
@@ -187,6 +194,24 @@ func runDisk(ctx context.Context, args []string, out, errOut io.Writer, deps Dep
 }
 
 func printDisk(w io.Writer, r disk.Report) error {
+	return printDiskOptions(w, r, false)
+}
+
+func printDiskOptions(w io.Writer, r disk.Report, verbose bool) error {
+	permissionCount := r.Coverage.PermissionErrors
+	retainedPermissions := int64(0)
+	visibleIssues := 0
+	for _, issue := range r.Issues {
+		if issue.Kind == disk.IssueKindPermission {
+			retainedPermissions++
+		}
+		if verbose || issue.Kind != disk.IssueKindPermission {
+			visibleIssues++
+		}
+	}
+	if retainedPermissions > permissionCount {
+		permissionCount = retainedPermissions
+	}
 	if _, e := fmt.Fprintf(w, "DISK SCAN — %s\nAllocated: %s   Apparent: %s\n", safe(r.Root), bytesText(r.Totals.AllocatedBytes), bytesText(r.Totals.ApparentBytes)); e != nil {
 		return e
 	}
@@ -195,6 +220,19 @@ func printDisk(w io.Writer, r disk.Report) error {
 	}
 	if !r.Coverage.Complete || r.Coverage.SkippedEntries > 0 || r.Coverage.OmittedErrors > 0 {
 		if _, e := fmt.Fprintln(w, "Results are partial; unscanned locations may contain larger items."); e != nil {
+			return e
+		}
+	}
+	if permissionCount > 0 {
+		label := "permission errors"
+		if permissionCount == 1 {
+			label = "permission error"
+		}
+		if verbose {
+			if _, e := fmt.Fprintf(w, "%d %s; permission details retained: %d.\n", permissionCount, label, retainedPermissions); e != nil {
+				return e
+			}
+		} else if _, e := fmt.Fprintf(w, "%d %s; use --verbose for details.\n", permissionCount, label); e != nil {
 			return e
 		}
 	}
@@ -273,18 +311,16 @@ func printDisk(w io.Writer, r disk.Report) error {
 			return e
 		}
 	}
-	if len(r.Issues) > 0 {
+	if visibleIssues > 0 {
 		if _, e := fmt.Fprintln(w, "\nSCAN ISSUES"); e != nil {
 			return e
 		}
 	}
 	for _, i := range r.Issues {
-		if _, e := fmt.Fprintf(w, "  %s %s: %s\n", safe(string(i.Operation)), safe(i.Path), safe(i.Error)); e != nil {
-			return e
+		if !verbose && i.Kind == disk.IssueKindPermission {
+			continue
 		}
-	}
-	if hasPermissionIssue(r.Issues) {
-		if _, e := fmt.Fprintln(w, `Permission errors: try `+"`daffy disk \"$HOME\"`"+` to scan your home directory, or use `+"`--exclude PATH`"+` for trees you intentionally omit. Inaccessible and excluded content is not counted. Only if daffy is trusted and you are authorized to read more, consider `+"`sudo daffy disk`"+`; elevated access may still be restricted.`); e != nil {
+		if _, e := fmt.Fprintf(w, "  %s %s: %s\n", safe(string(i.Operation)), safe(i.Path), safe(i.Error)); e != nil {
 			return e
 		}
 	}
@@ -332,16 +368,6 @@ func inodeUsage(free, total uint64) string {
 		return "unknown"
 	}
 	return fmt.Sprintf("%d%% free", ratioPercent(free, total))
-}
-
-func hasPermissionIssue(issues []disk.Issue) bool {
-	for _, issue := range issues {
-		err := strings.ToLower(issue.Error)
-		if strings.Contains(err, "permission denied") || strings.Contains(err, "operation not permitted") {
-			return true
-		}
-	}
-	return false
 }
 
 func bytesText(v int64) string {
