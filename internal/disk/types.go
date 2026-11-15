@@ -71,7 +71,17 @@ type Issue struct {
 	Path      string    `json:"path,omitempty"`
 	Operation Operation `json:"operation"`
 	Error     string    `json:"error"`
+	// Kind classifies the failure; it is internal metadata and is not serialized.
+	Kind IssueKind `json:"-"`
 }
+type IssueKind uint8
+
+const (
+	IssueKindUnknown IssueKind = iota
+	IssueKindOther
+	IssueKindPermission
+)
+
 type Coverage struct {
 	Mounts         int   `json:"mounts"`
 	ScannedMounts  int   `json:"scanned_mounts"`
@@ -80,7 +90,9 @@ type Coverage struct {
 	Files          int64 `json:"files"`
 	SkippedEntries int64 `json:"skipped_entries"`
 	OmittedErrors  int64 `json:"omitted_errors"`
-	Complete       bool  `json:"complete"`
+	// PermissionErrors counts permission-failure events, not unique paths.
+	PermissionErrors int64 `json:"-"`
+	Complete         bool  `json:"complete"`
 }
 type Totals struct {
 	ApparentBytes  int64 `json:"apparent_bytes"`
